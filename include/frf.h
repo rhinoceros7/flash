@@ -1,5 +1,7 @@
 #ifndef FRF_H
 #define FRF_H
+#define FRF_RECORD_HEADER_BYTES 20
+#define FRF_FILE_HEADER_BYTES (FRF_MAGIC_LEN + 16)
 
 #include <stdint.h>
 #include <stdio.h>

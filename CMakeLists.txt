@@ -9,19 +9,22 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# Core library
-add_library(frf STATIC
-        src/frf.c
-        src/crc32.c
-)
+# Core library (FRF + reader wrapper)
+add_library(frf STATIC src/frf.c src/crc32.c src/flash_reader.c)
 target_include_directories(frf PUBLIC include)
 
-# Generic tools
+# Tiny tools
 add_executable(flsh_write tools/flsh_write.c)
 target_link_libraries(flsh_write PRIVATE frf)
 
 add_executable(flsh_read tools/flsh_read.c)
 target_link_libraries(flsh_read PRIVATE frf)
 
-set_target_properties(flsh_write flsh_read PROPERTIES
+# Unified CLI
+add_executable(flash cli/flash_main.c)
+target_link_libraries(flash PRIVATE frf)
+target_include_directories(flash PRIVATE include)
+
+# Put all binaries in bin/
+set_target_properties(flsh_write flsh_read flash PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
