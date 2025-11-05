@@ -195,6 +195,8 @@ retry:
       return FLASH_ETRUNC_PAYLOAD;
     case -6:
       return FLASH_ECRC;
+    case -7:
+      return FLASH_ECHAIN;
     default:
       return FLASH_EIO;
   }
@@ -210,7 +212,7 @@ retry:
 
   if (payload_buf) {
     if (buf_cap < hdr.length) {
-      r->current_offset = offset + (uint64_t)FRF_RECORD_HEADER_BYTES + (uint64_t)hdr.length;
+      r->current_offset = offset + (uint64_t)FRF_FRAME_OVERHEAD + (uint64_t)hdr.length;
       return FLASH_EBUFSIZE;
     }
     if (hdr.length > 0) {
@@ -218,6 +220,6 @@ retry:
     }
   }
 
-  r->current_offset = offset + (uint64_t)FRF_RECORD_HEADER_BYTES + (uint64_t)hdr.length;
+  r->current_offset = offset + (uint64_t)FRF_FRAME_OVERHEAD + (uint64_t)hdr.length;
   return FLASH_OK;
 }

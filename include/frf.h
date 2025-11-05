@@ -1,7 +1,12 @@
 #ifndef FRF_H
 #define FRF_H
+
+// do NOT change FRF_RECORD_HEADER_BYTES
 #define FRF_RECORD_HEADER_BYTES 20
+
 #define FRF_FILE_HEADER_BYTES (FRF_MAGIC_LEN + 16)
+#define FRF_CHAIN_BYTES 40
+#define FRF_FRAME_OVERHEAD (FRF_RECORD_HEADER_BYTES + FRF_CHAIN_BYTES)
 
 #include <stdint.h>
 #include <stdio.h>
@@ -31,7 +36,13 @@ typedef struct {
 
 typedef struct {
     FILE* fp;
-    bool  is_writer;
+    bool is_writer;
+    bool header_bytes_valid;
+    bool prev_hash_valid;
+    unsigned char header_bytes[16];
+    unsigned char header_hash[32];
+    unsigned char prev_hash[32];
+    uint64_t next_seq_no;
 } frf_handle_t;
 
 /* Open/create .flsh

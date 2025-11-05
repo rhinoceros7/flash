@@ -31,6 +31,7 @@ static const char* status_name(int code) {
     case FLASH_ETRUNC_PAYLOAD: return "truncated_payload";
     case FLASH_EBUFSIZE: return "buffer_too_small";
     case FLASH_ECRC: return "crc_mismatch";
+    case FLASH_ECHAIN: return "chain_mismatch";
     default: return "unknown";
   }
 }
@@ -79,7 +80,7 @@ static int cmd_info(int argc, char** argv) {
       if (!have_ts) { first_ts = meta.ts_unix_ns; have_ts = 1; }
       last_ts = meta.ts_unix_ns;
       records++;
-      total_frame_bytes += (uint64_t)FRF_RECORD_HEADER_BYTES + (uint64_t)payload_len;
+      total_frame_bytes += (uint64_t)FRF_FRAME_OVERHEAD + (uint64_t)payload_len;
       continue;
     }
     if (step == FLASH_EOF) break;
@@ -129,7 +130,7 @@ static int verify_loop(flash_reader* reader, uint64_t file_bytes) {
     int step = flash_reader_next(reader, &meta, NULL, 0, &payload_len);
     if (step == FLASH_OK) {
       records_ok += 1;
-      next_offset = meta.file_offset + (uint64_t)FRF_RECORD_HEADER_BYTES + (uint64_t)payload_len;
+      next_offset = meta.file_offset + (uint64_t)FRF_FRAME_OVERHEAD + (uint64_t)payload_len;
       continue;
     }
     if (step == FLASH_EOF) {
