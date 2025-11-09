@@ -1,9 +1,14 @@
+#include <ctype.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ingest.h"
 #include "flash/reader.h"
 #include "frf.h"
+#include "ingest_source.h"
+#include "ingest_formats.h"
+
 #ifndef EX_USAGE
 #define EX_USAGE 64
 #endif
@@ -34,6 +39,183 @@ static const char* status_name(int code) {
     case FLASH_ECHAIN: return "chain_mismatch";
     default: return "unknown";
   }
+}
+
+static int strings_equal_ci(const char* a, const char* b) {
+  return strcasecmp(a, b) == 0;
+}
+
+static void trim_in_place(char* s) {
+  if (!s) return;
+  char* start = s;
+  while (*start && isspace((unsigned char)*start)) start++;
+  if (start != s) {
+    memmove(s, start, strlen(start) + 1);
+  }
+  size_t len = strlen(s);
+  while (len > 0 && isspace((unsigned char)s[len - 1])) {
+    s[len - 1] = '\0';
+    --len;
+  }
+}
+
+static int parse_size_value(const char* text, uint64_t* out) {
+  if (strings_equal_ci(text, "off") || strings_equal_ci(text, "0")) {
+    *out = 0;
+    return 0;
+  }
+  char* end = NULL;
+  unsigned long long base = strtoull(text, &end, 10);
+  if (end == text) return -1;
+  uint64_t multiplier = 1;
+  if (*end) {
+    if (end[1] != '\0') return -1;
+    switch (tolower((unsigned char)*end)) {
+      case 'k': multiplier = 1024ULL; break;
+      case 'm': multiplier = 1024ULL * 1024ULL; break;
+      case 'g': multiplier = 1024ULL * 1024ULL * 1024ULL; break;
+      default: return -1;
+    }
+  }
+  if (multiplier != 0 && base > UINT64_MAX / multiplier) return -1;
+  *out = (uint64_t)base * multiplier;
+  return 0;
+}
+
+static int parse_time_value(const char* text, uint64_t* out) {
+  if (strings_equal_ci(text, "off") || strings_equal_ci(text, "0")) {
+    *out = 0;
+    return 0;
+  }
+  char* end = NULL;
+  unsigned long long base = strtoull(text, &end, 10);
+  if (end == text) return -1;
+  uint64_t multiplier = 1;
+  if (*end) {
+    if (end[1] != '\0') return -1;
+    switch (tolower((unsigned char)*end)) {
+      case 'h': multiplier = 3600ULL; break;
+      case 'm': multiplier = 60ULL; break;
+      case 's': multiplier = 1ULL; break;
+      default: return -1;
+    }
+  }
+  if (multiplier != 0 && base > UINT64_MAX / multiplier) return -1;
+  *out = (uint64_t)base * multiplier;
+  return 0;
+}
+
+static int parse_record_value(const char* text, uint64_t* out) {
+  if (strings_equal_ci(text, "off") || strings_equal_ci(text, "0")) {
+    *out = 0;
+    return 0;
+  }
+  char* end = NULL;
+  unsigned long long base = strtoull(text, &end, 10);
+  if (end == text) return -1;
+  uint64_t multiplier = 1;
+  if (*end) {
+    if (end[1] != '\0') return -1;
+    switch (tolower((unsigned char)*end)) {
+      case 'k': multiplier = 1000ULL; break;
+      case 'm': multiplier = 1000000ULL; break;
+      default: return -1;
+    }
+  }
+  if (multiplier != 0 && base > UINT64_MAX / multiplier) return -1;
+  *out = (uint64_t)base * multiplier;
+  return 0;
+}
+
+static int parse_rotate_clause(const char* arg, ingest_config* cfg) {
+  if (strings_equal_ci(arg, "off") || strings_equal_ci(arg, "none")) {
+    cfg->rotate_bytes = 0;
+    cfg->rotate_seconds = 0;
+    cfg->rotate_records = 0;
+    return 0;
+  }
+  size_t len = strlen(arg);
+  if (len >= 256) return -1;
+  char buf[256];
+  memcpy(buf, arg, len + 1);
+  char* cursor = buf;
+  int found = 0;
+  while (*cursor) {
+    char* part = cursor;
+    char* comma = strchr(part, ',');
+    if (comma) {
+      *comma = '\0';
+      cursor = comma + 1;
+    } else {
+      cursor = part + strlen(part);
+    }
+    trim_in_place(part);
+    if (*part == '\0') continue;
+    const char* key = "records";
+    char* value = part;
+    char* eq = strchr(part, '=');
+    if (eq) {
+      *eq = '\0';
+      trim_in_place(part);
+      trim_in_place(eq + 1);
+      key = part;
+      value = eq + 1;
+    }
+    uint64_t parsed = 0;
+    if (strings_equal_ci(key, "size")) {
+      if (parse_size_value(value, &parsed) != 0) return -1;
+      cfg->rotate_bytes = parsed;
+    } else if (strings_equal_ci(key, "time")) {
+      if (parse_time_value(value, &parsed) != 0) return -1;
+      cfg->rotate_seconds = parsed;
+    } else if (strings_equal_ci(key, "records") || strings_equal_ci(key, "recs")) {
+      if (parse_record_value(value, &parsed) != 0) return -1;
+      cfg->rotate_records = parsed;
+    } else {
+      return -1;
+    }
+    found = 1;
+  }
+  return found ? 0 : -1;
+}
+
+static int parse_format_token(const char* tok, int* out_fmt) {
+  if (strings_equal_ci(tok, "auto")) { *out_fmt = FMT_AUTO;  return 0; }
+  if (strings_equal_ci(tok, "lines")) { *out_fmt = FMT_LINES; return 0; }
+  if (strings_equal_ci(tok, "ndjson") ||
+      strings_equal_ci(tok, "lines+json")) { *out_fmt = FMT_NDJSON; return 0; }
+  if (strings_equal_ci(tok, "json")) { *out_fmt = FMT_JSON;  return 0; }
+  if (strings_equal_ci(tok, "csv")) { *out_fmt = FMT_CSV;   return 0; }
+  if (strings_equal_ci(tok, "len4")) { *out_fmt = FMT_LEN4;  return 0; }
+  if (strings_equal_ci(tok, "raw")) { *out_fmt = FMT_RAW;   return 0; }
+  return -1;
+}
+
+static int parse_source_clause(int argc, char** argv, int* idx, ingest_config* cfg) {
+  if (*idx >= argc) return -1;
+  const char* kind = argv[(*idx)++];
+
+  if (strings_equal_ci(kind, "stdin")) {
+    cfg->src_kind = SRC_STDIN;
+    cfg->src_detail = NULL;
+    return 0;
+  }
+
+  if (*idx >= argc) return -1;
+  const char* detail = argv[(*idx)++];
+
+  if (strings_equal_ci(kind, "file")) { cfg->src_kind = SRC_FILE; cfg->src_detail = detail; return 0; }
+  if (strings_equal_ci(kind, "dir")) { cfg->src_kind = SRC_DIR; cfg->src_detail = detail; return 0; }
+  if (strings_equal_ci(kind, "tcp")) { cfg->src_kind = SRC_TCP; cfg->src_detail = detail; return 0; }
+  if (strings_equal_ci(kind, "udp")) { cfg->src_kind = SRC_UDP; cfg->src_detail = detail; return 0; }
+  if (strings_equal_ci(kind, "serial")) { cfg->src_kind = SRC_SERIAL; cfg->src_detail = detail; return 0; }
+
+  // URL-like sources
+  if (strings_equal_ci(kind, "http")) { cfg->src_kind = SRC_HTTP; cfg->src_detail = detail; return 0; }
+  if (strings_equal_ci(kind, "sse")) { cfg->src_kind = SRC_SSE; cfg->src_detail = detail; return 0; }
+  if (strings_equal_ci(kind, "ws")) { cfg->src_kind = SRC_WS; cfg->src_detail = detail; return 0; }
+
+  return -1;
 }
 
 static int cmd_info(int argc, char** argv) {
@@ -115,6 +297,59 @@ static int cmd_info(int argc, char** argv) {
          " file_bytes=%" PRIu64 " avg_frame_bytes=%s endianness=little\n",
          created_ns, first_buf, last_buf, records, file_bytes, avg_buf);
   return 0;
+}
+
+static int cmd_ingest(int argc, char** argv) {
+  if (argc < 6) { print_usage(); return EX_USAGE; }
+
+  ingest_config cfg;
+  memset(&cfg, 0, sizeof(cfg));
+  cfg.out_path = argv[1];
+
+  int idx = 2;
+  if (idx >= argc || !strings_equal_ci(argv[idx], "from")) { print_usage(); return EX_USAGE; }
+  idx += 1;
+
+  if (parse_source_clause(argc, argv, &idx, &cfg) != 0) {
+    fprintf(stderr, "flash ingest: invalid source specification\n");
+    return EX_USAGE;
+  }
+
+  if (idx >= argc || !strings_equal_ci(argv[idx], "as")) { print_usage(); return EX_USAGE; }
+  idx += 1;
+
+  if (idx >= argc || parse_format_token(argv[idx], (int*)&cfg.fmt) != 0) {
+    fprintf(stderr, "flash ingest: unknown format\n");
+    return EX_USAGE;
+  }
+  idx += 1;
+
+  cfg.type_label = NULL;
+  cfg.rotate_bytes = 0;
+  cfg.rotate_seconds = 0;
+  cfg.rotate_records = 0;
+  cfg.strict = false;
+
+  while (idx < argc) {
+    const char* tok = argv[idx++];
+    if (strings_equal_ci(tok, "type")) {
+      if (idx >= argc) { fprintf(stderr, "flash ingest: missing type label\n"); return EX_USAGE; }
+      cfg.type_label = argv[idx++];
+    } else if (strings_equal_ci(tok, "rotate")) {
+      if (idx >= argc) { fprintf(stderr, "flash ingest: missing rotate clause\n"); return EX_USAGE; }
+      if (parse_rotate_clause(argv[idx++], &cfg) != 0) {
+        fprintf(stderr, "flash ingest: invalid rotate clause\n");
+        return EX_USAGE;
+      }
+    } else if (strings_equal_ci(tok, "strict")) {
+      cfg.strict = true;
+    } else {
+      fprintf(stderr, "flash ingest: unknown option '%s'\n", tok);
+      return EX_USAGE;
+    }
+  }
+
+  return flash_ingest_run(&cfg);
 }
 
 static int verify_loop(flash_reader* reader, uint64_t file_bytes) {
@@ -208,7 +443,7 @@ int main(int argc, char** argv) {
       {"index", cmd_stub},
       {"replay", cmd_stub},
       {"export", cmd_stub},
-      {"ingest", cmd_stub},
+      {"ingest", cmd_ingest},
       {"cat", cmd_stub},
       {"tail", cmd_stub},
   };

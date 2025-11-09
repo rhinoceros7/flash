@@ -67,9 +67,17 @@ add_executable(flsh_read tools/flsh_read.c)
 target_link_libraries(flsh_read PRIVATE frf)
 
 # Unified CLI
-add_executable(flash cli/flash_main.c)
+add_executable(flash
+        cli/flash_main.c
+        cli/ingest.c
+        cli/ingest_formats.c
+        cli/ingest_source.c)
 target_link_libraries(flash PRIVATE frf)
 target_include_directories(flash PRIVATE include)
+
+if (WIN32)
+    target_link_libraries(flash PRIVATE ws2_32)
+endif()
 
 # Put all binaries in bin/
 set_target_properties(flsh_write flsh_read flash PROPERTIES
