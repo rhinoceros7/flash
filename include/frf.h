@@ -72,4 +72,8 @@ int  frf_next_record(
 /* CRC32 utility (IEEE/poly 0xEDB88320). */
 uint32_t frf_crc32(const void* data, size_t n);
 
+// Expose the current chain tip (last frame hash)
+// If no frames yet, returns the header hash if present, else zeros.
+void frf_get_chain_tip(const frf_handle_t* h, unsigned char out32[32]);
+
 #endif

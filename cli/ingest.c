@@ -2,6 +2,7 @@
 #include "frf.h"
 #include "ingest_formats.h"
 #include "ingest_source.h"
+#include "flash/seal.h"
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -21,6 +22,8 @@
 #define FRF_TYPE_STREAM_META 0xFFFFFF00u
 #define META_BUF_SIZE 2048
 #define PATH_BUF_SIZE 1024
+#define FRF_TYPE_RUN_OPEN 0xFFFFFF01u
+#define FRF_TYPE_RUN_CLOSE 0xFFFFFF02u
 
 typedef struct {
   const ingest_config* base;
@@ -328,6 +331,27 @@ static int write_meta_frame(output_file* out, const ingest_runtime* rt, ingest_d
   return 0;
 }
 
+static int write_run_open(output_file* out, const ingest_runtime* rt) {
+  (void)rt; // reserved for future use
+  char buf[256];
+  int n = snprintf(buf, sizeof(buf),
+      "{\"schema_version\":1,\"run_id\":\"%llu\",\"start_ts\":%llu}",
+      (unsigned long long)out->created_ns,
+      (unsigned long long)out->created_ns);
+  if (n < 0 || (size_t)n >= sizeof(buf)) return -1;
+  return frf_append_record(&out->handle, FRF_TYPE_RUN_OPEN, 0, buf, (uint32_t)n);
+}
+
+static int write_run_close_clean(output_file* out) {
+  char buf[256];
+  int n = snprintf(buf, sizeof(buf),
+    "{\"schema_version\":1,\"run_id\":\"%llu\",\"end_ts\":%llu,\"status\":\"CLEAN\"}",
+    (unsigned long long)out->created_ns,
+    (unsigned long long)out->last_ts_ns);
+  if (n < 0 || (size_t)n >= sizeof(buf)) return -1;
+  return frf_append_record(&out->handle, FRF_TYPE_RUN_CLOSE, 0, buf, (uint32_t)n);
+}
+
 static int ensure_timestamp_policy(ingest_decoder* decoder) {
   if (!decoder->ts_policy.source) {
     decoder->ts_policy.source = "now";
@@ -339,7 +363,7 @@ static int ensure_timestamp_policy(ingest_decoder* decoder) {
 
 static void summary(const output_file* out, uint64_t frames) {
   if (!out->open) return;
-  fprintf(stderr, "close: path=%s frames=%llu last_ts=%llu\n", out->path, (unsigned long long)frames, (unsigned long long)out->last_ts_ns);
+  fprintf(stderr, "close: path=%s records=%llu last_ts=%llu\n", out->path, (unsigned long long)frames, (unsigned long long)out->last_ts_ns);
 }
 
 static void copy_path(char* dst, size_t cap, const char* src) {
@@ -412,7 +436,9 @@ int flash_ingest_run(const ingest_config* cfg) {
   }
 
   /* stamp final format before opening output and writing META */
-  rt.active.fmt = dec.resolved_fmt ? dec.resolved_fmt : rt.active.fmt;
+  if (dec.resolved_fmt != 0) {
+    rt.active.fmt = dec.resolved_fmt;
+  }
   rt.type_label = infer_type_label_for_format(rt.active.fmt);
   rt.type_id = hash_type_label(rt.type_label);
 
@@ -441,6 +467,10 @@ int flash_ingest_run(const ingest_config* cfg) {
     ingest_source_close(source);
     return 1;
   }
+
+  // Mark run start
+  (void)write_run_open(&out, &rt);
+
   print_timestamp_banner(&dec);
 
   /* main loop */
@@ -509,14 +539,26 @@ int flash_ingest_run(const ingest_config* cfg) {
     if (rotate_reason) {
       char next_path[PATH_BUF_SIZE];
       derive_rotated_name(rt.active.out_path, next_path, sizeof(next_path));
-      fprintf(stderr, "rotate: reason=%s frames=%llu bytes=%llu next=%s\n",
+      fprintf(stderr, "rotate: reason=%s records=%llu bytes=%llu next=%s\n",
               rotate_reason == 1 ? "records" : rotate_reason == 2 ? "size" : "time",
               (unsigned long long)out.records, (unsigned long long)out.bytes, next_path);
+      (void)write_run_close_clean(&out);
+
+      // Capture chain tip and record count
+      uint8_t chain_tip_prev[32];
+      frf_get_chain_tip(&out.handle, chain_tip_prev);
+      uint64_t records_prev = out.records;
       summary(&out, out.records);
       close_output(&out);
+
+      // Seal closed segment
+      (void)flash_seal_append_fsig(current_path, FLASH_SEAL_CLEAN, 0,
+                                      chain_tip_prev, records_prev, NULL);
+
       copy_path(current_path, sizeof(current_path), next_path);
       if (open_output(current_path, &out) != 0) { fprintf(stderr, "ingest: failed to open %s\n", current_path); free(payload); payload = NULL; break; }
       if (write_meta_frame(&out, &rt, &dec) != 0) { free(payload); payload = NULL; break; }
+      write_run_open(&out, &rt);
       print_timestamp_banner(&dec);
     }
 
@@ -533,8 +575,27 @@ int flash_ingest_run(const ingest_config* cfg) {
 
   destroy_decoder(&dec);
   int close_status = ingest_source_close(source);
-  summary(&out, out.records);
-  close_output(&out);
+  // Final clean close and seal the last segment
+  if (out.open) {
+    (void)write_run_close_clean(&out);
+    uint8_t chain_tip[32];
+    frf_get_chain_tip(&out.handle, chain_tip);
+    uint64_t records_final = out.records;
+    summary(&out, out.records);
+    close_output(&out);
+    flash_seal_result fsr;
+    int s_rc = flash_seal_append_fsig(current_path, FLASH_SEAL_CLEAN, 0,
+                                      chain_tip, records_final, &fsr);
+    if (s_rc != 0) {
+      fprintf(stderr, "seal: failed (%d); file remains unsealed\n", s_rc);
+    } else {
+      fprintf(stderr, "seal: kid=%02x%02x%02x%02x%02x%02x%02x%02x signed_length=%llu\n",
+              fsr.kid[0],fsr.kid[1],fsr.kid[2],fsr.kid[3],fsr.kid[4],fsr.kid[5],fsr.kid[6],fsr.kid[7],
+              (unsigned long long)fsr.signed_length);
+    }
+  } else {
+    // nothing to seal (no open output)
+  }
   if (out.records == 0 && close_status != 0) return 1;
   return 0;
 }

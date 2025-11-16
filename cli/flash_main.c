@@ -15,6 +15,9 @@
 
 typedef int (*flash_cmd_fn)(int argc, char** argv);
 
+int cmd_verify(int argc, char **argv); /* Implemented in verify.c */
+int cmd_repair(int argc, char **argv); /* Implemented in repair.c */
+
 typedef struct {
   const char* name;
   flash_cmd_fn fn;
@@ -352,77 +355,7 @@ static int cmd_ingest(int argc, char** argv) {
   return flash_ingest_run(&cfg);
 }
 
-static int verify_loop(flash_reader* reader, uint64_t file_bytes) {
-  uint64_t records_ok = 0;
-  uint64_t next_offset = FRF_FILE_HEADER_BYTES;
-  int error_code = FLASH_OK;
-  uint64_t error_offset = 0;
-  int trailing_partial = 0;
 
-  for (;;) {
-    flash_frame_meta meta;
-    uint32_t payload_len = 0;
-    int step = flash_reader_next(reader, &meta, NULL, 0, &payload_len);
-    if (step == FLASH_OK) {
-      records_ok += 1;
-      next_offset = meta.file_offset + (uint64_t)FRF_FRAME_OVERHEAD + (uint64_t)payload_len;
-      continue;
-    }
-    if (step == FLASH_EOF) {
-      break;
-    }
-    error_code = step;
-    error_offset = next_offset;
-    if (step == FLASH_ETRUNC_HDR || step == FLASH_ETRUNC_PAYLOAD) {
-      trailing_partial = 1;
-    }
-    break;
-  }
-
-  if (error_code == FLASH_OK) {
-    printf("records_ok=%" PRIu64 " bytes_scanned=%" PRIu64 "\n",
-           records_ok, file_bytes);
-    return 0;
-  }
-
-  if (trailing_partial) {
-    printf("records_ok=%" PRIu64 " bytes_scanned=%" PRIu64
-           " error_offset=%" PRIu64 " error=%s note=trailing_partial\n",
-           records_ok, file_bytes, error_offset, status_name(error_code));
-    return 1;
-  }
-
-  printf("records_ok=%" PRIu64 " bytes_scanned=%" PRIu64
-         " error_offset=%" PRIu64 " error=%s\n",
-         records_ok, file_bytes, error_offset, status_name(error_code));
-  return 2;
-}
-
-static int cmd_verify(int argc, char** argv) {
-  if (argc != 2) {
-    print_usage();
-    return EX_USAGE;
-  }
-  const char* path = argv[1];
-  flash_reader* reader = NULL;
-  int rc = flash_reader_open(path, &reader);
-  if (rc != FLASH_OK) {
-    fprintf(stderr, "flash verify: failed to open '%s': %s\n", path, status_name(rc));
-    return 2;
-  }
-
-  uint64_t file_bytes = 0;
-  rc = flash_reader_filesize(reader, &file_bytes);
-  if (rc != FLASH_OK) {
-    fprintf(stderr, "flash verify: filesize failed: %s\n", status_name(rc));
-    flash_reader_close(reader);
-    return 2;
-  }
-
-  int exit_code = verify_loop(reader, file_bytes);
-  flash_reader_close(reader);
-  return exit_code;
-}
 
 static int cmd_stub(int argc, char** argv) {
   (void)argc;
@@ -439,7 +372,7 @@ int main(int argc, char** argv) {
   flash_command commands[] = {
       {"info", cmd_info},
       {"verify", cmd_verify},
-      {"repair", cmd_stub},
+      {"repair", cmd_repair},
       {"index", cmd_stub},
       {"replay", cmd_stub},
       {"export", cmd_stub},

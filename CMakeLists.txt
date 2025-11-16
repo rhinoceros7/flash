@@ -53,8 +53,9 @@ elseif (CPU_LOWER MATCHES "aarch64|arm64|armv7|armv8|arm")
     endif()
 endif()
 
-# Core library (FRF + reader wrapper)
-add_library(frf STATIC src/frf.c src/crc32.c src/flash_reader.c)
+# Core library
+add_library(frf STATIC src/frf.c src/crc32.c src/flash_reader.c
+        src/seal.c src/third_party/monocypher/monocypher.c)
 target_include_directories(frf PUBLIC include)
 target_link_libraries(frf PRIVATE blake3)
 target_include_directories(frf PRIVATE ${BLAKE3_DIR})
@@ -71,12 +72,15 @@ add_executable(flash
         cli/flash_main.c
         cli/ingest.c
         cli/ingest_formats.c
-        cli/ingest_source.c)
+        cli/ingest_source.c
+        cli/verify.c
+        cli/repair.c)
 target_link_libraries(flash PRIVATE frf)
 target_include_directories(flash PRIVATE include)
 
 if (WIN32)
     target_link_libraries(flash PRIVATE ws2_32)
+    target_link_libraries(frf PRIVATE bcrypt)
 endif()
 
 # Put all binaries in bin/

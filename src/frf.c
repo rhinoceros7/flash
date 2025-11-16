@@ -357,3 +357,16 @@ int frf_next_record(
     if (out_len) *out_len = hdr->length;
     return 0;
 }
+
+void frf_get_chain_tip(const frf_handle_t* h, unsigned char out32[32]) {
+    if (!out32) return;
+    if (h && h->prev_hash_valid) {
+        memcpy(out32, h->prev_hash, 32);
+        return;
+    }
+    if (h && h->header_bytes_valid) {
+        memcpy(out32, h->header_hash, 32);
+        return;
+    }
+    memset(out32, 0, 32);
+}
