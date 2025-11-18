@@ -17,6 +17,7 @@ typedef int (*flash_cmd_fn)(int argc, char** argv);
 
 int cmd_verify(int argc, char **argv); /* Implemented in verify.c */
 int cmd_repair(int argc, char **argv); /* Implemented in repair.c */
+int cmd_replay(int argc, char **argv); /* Implemented in replay.c */
 
 typedef struct {
   const char* name;
@@ -26,7 +27,7 @@ typedef struct {
 static void print_usage(void) {
   fprintf(stderr,
           "usage: flash <command> [args]\n"
-          "commands: info verify repair index replay export ingest cat tail\n");
+          "commands: info verify repair ingest index replay export merge\n");
 }
 
 static const char* status_name(int code) {
@@ -373,12 +374,11 @@ int main(int argc, char** argv) {
       {"info", cmd_info},
       {"verify", cmd_verify},
       {"repair", cmd_repair},
-      {"index", cmd_stub},
-      {"replay", cmd_stub},
-      {"export", cmd_stub},
       {"ingest", cmd_ingest},
-      {"cat", cmd_stub},
-      {"tail", cmd_stub},
+      {"replay", cmd_replay},
+      {"index", cmd_stub},
+      {"export", cmd_stub},
+      {"merge", cmd_stub},
   };
   const size_t command_count = sizeof(commands) / sizeof(commands[0]);
 

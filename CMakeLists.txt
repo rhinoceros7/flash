@@ -74,7 +74,8 @@ add_executable(flash
         cli/ingest_formats.c
         cli/ingest_source.c
         cli/verify.c
-        cli/repair.c)
+        cli/repair.c
+        cli/replay.c)
 target_link_libraries(flash PRIVATE frf)
 target_include_directories(flash PRIVATE include)
 
