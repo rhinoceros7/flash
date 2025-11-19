@@ -16,6 +16,7 @@ set(BLAKE3_CORE
         ${BLAKE3_DIR}/blake3.c
         ${BLAKE3_DIR}/blake3_portable.c
         ${BLAKE3_DIR}/blake3_dispatch.c
+        include/flash/index.h
 )
 
 set(BLAKE3_SIMD_X86
@@ -55,7 +56,8 @@ endif()
 
 # Core library
 add_library(frf STATIC src/frf.c src/crc32.c src/flash_reader.c
-        src/seal.c src/third_party/monocypher/monocypher.c)
+        src/seal.c src/third_party/monocypher/monocypher.c
+        src/index.c)
 target_include_directories(frf PUBLIC include)
 target_link_libraries(frf PRIVATE blake3)
 target_include_directories(frf PRIVATE ${BLAKE3_DIR})
@@ -75,7 +77,8 @@ add_executable(flash
         cli/ingest_source.c
         cli/verify.c
         cli/repair.c
-        cli/replay.c)
+        cli/replay.c
+        cli/index.c)
 target_link_libraries(flash PRIVATE frf)
 target_include_directories(flash PRIVATE include)
 

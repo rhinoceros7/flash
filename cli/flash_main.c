@@ -18,6 +18,7 @@ typedef int (*flash_cmd_fn)(int argc, char** argv);
 int cmd_verify(int argc, char **argv); /* Implemented in verify.c */
 int cmd_repair(int argc, char **argv); /* Implemented in repair.c */
 int cmd_replay(int argc, char **argv); /* Implemented in replay.c */
+int cmd_index(int argc, char **argv); /* Implemented in index.c */
 
 typedef struct {
   const char* name;
@@ -376,7 +377,7 @@ int main(int argc, char** argv) {
       {"repair", cmd_repair},
       {"ingest", cmd_ingest},
       {"replay", cmd_replay},
-      {"index", cmd_stub},
+      {"index", cmd_index},
       {"export", cmd_stub},
       {"merge", cmd_stub},
   };
