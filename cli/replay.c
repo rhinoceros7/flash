@@ -12,9 +12,14 @@
 #include <time.h>
 #include <stdbool.h>
 #include "frf.h"
+#include "flash/index.h"
 
 #ifndef EX_USAGE
 #define EX_USAGE 64
+#endif
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
 #endif
 
 // timestamp parsing helpers
@@ -88,6 +93,27 @@ static int parse_iso8601_ns(const char* s, uint64_t* out_ns) {
   return 0;
 }
 
+// Make the path for an index file relating to the .flsh file being replayed.
+static void make_index_path_for_replay(const char* flsh_path,
+                                       char* out,
+                                       size_t out_cap) {
+  if (!flsh_path || !out || out_cap == 0) return;
+
+  size_t len = strlen(flsh_path);
+  if (len + 6 > out_cap) {
+    out[0] = '\0';
+    return;
+  }
+
+  memcpy(out, flsh_path, len + 1);
+  char* dot = strrchr(out, '.');
+  if (dot && strcmp(dot, ".flsh") == 0) {
+    strcpy(dot, ".fidx");
+  } else {
+    strcpy(out + len, ".fidx");
+  }
+}
+
 // Parse a timestamp into unix_ns.
 // Supported forms:
 //   Raw integer nanoseconds (e.g. "1731812563123456789")
@@ -118,7 +144,8 @@ static void replay_usage(void) {
           "  --human            Human-readable summary view\n"
           "  --human-readable   Alias for --human\n"
           "  --no-trunc         In --human mode, show full payload (no ... at the end)\n"
-          "  --full-payload     Alias for --no-trunc\n");
+          "  --full-payload     Alias for --no-trunc\n"
+          "  --no-index         Do not use .fidx index even if present\n");
 }
 
 // FSIG detection:
@@ -364,6 +391,7 @@ int cmd_replay(int argc, char** argv) {
   int data_only = 0;
   int human = 0;
   int no_trunc = 0;
+  int no_index = 0;
   const char* path = NULL;
 
   // argv[0] is "replay"; flags start at argv[1].
@@ -385,6 +413,8 @@ int cmd_replay(int argc, char** argv) {
           replay_usage();
           return EX_USAGE;
         }
+      } else if (!strcmp(arg, "--no-index")) {
+        no_index = 1;
       } else if (!strcmp(arg, "--limit")) {
         if (i + 1 >= argc) {
           fprintf(stderr,
@@ -472,6 +502,28 @@ int cmd_replay(int argc, char** argv) {
     return EX_USAGE;
   }
 
+  /* Index loading that is optional. Fallback if anything fails. */
+  flash_index idx;
+  int have_index = 0;
+  int idx_is_stale = 0;
+
+  memset(&idx, 0, sizeof(idx));
+
+  if (!no_index) {
+    char fidx_path[PATH_MAX];
+    make_index_path_for_replay(path, fidx_path, sizeof(fidx_path));
+    if (fidx_path[0] != '\0') {
+      int rc_idx = flash_index_load(path, fidx_path, &idx, &idx_is_stale);
+      if (rc_idx == 0 && !idx_is_stale) {
+        have_index = 1;
+      } else {
+        /* No usable index: just fall back to full scan. */
+        flash_index_free(&idx);
+        memset(&idx, 0, sizeof(idx));
+      }
+    }
+  }
+
   // Detect FSIG trailer (if present) so we don't go into it as FRF
   int has_fsig = 0;
   uint64_t fsig_offset = 0;
@@ -499,9 +551,33 @@ int cmd_replay(int argc, char** argv) {
     return 2;
   }
 
+  /* Decide where to start reading frames.
+   Default: just after the FRF file header. */
+  uint64_t start_offset = FRF_FILE_HEADER_BYTES;
+
+  if (have_index && have_from) {
+    const flash_index_entry_v1* e =
+        flash_index_find_by_ts(&idx, (int64_t)from_ts);
+    if (e && e->offset >= FRF_FILE_HEADER_BYTES) {
+      start_offset = e->offset;
+    }
+  }
+
+  if (start_offset != FRF_FILE_HEADER_BYTES) {
+    int seek_rc = frf_seek_bytes(&h, start_offset);
+    if (seek_rc != 0) {
+      fprintf(stderr,
+              "flash replay: failed to seek to %" PRIu64 " in '%s'\n",
+              start_offset, path);
+      flash_index_free(&idx);
+      frf_close(&h);
+      return 2;
+    }
+  }
+
   // Non-human mode: stream payloads directly
   if (!human) {
-    uint64_t offset = FRF_FILE_HEADER_BYTES;
+    uint64_t offset = start_offset;
     uint64_t emitted = 0;
     unsigned char buf[64 * 1024];
 
@@ -586,11 +662,12 @@ int cmd_replay(int argc, char** argv) {
 
     frf_close(&h);
     fflush(stdout);
+    flash_index_free(&idx);
     return 0;
   }
 
   // Human-readable mode: gather stats + summaries, then print
-  uint64_t offset = FRF_FILE_HEADER_BYTES;
+  uint64_t offset = start_offset;
   unsigned char buf[64 * 1024];
 
   frame_info* frames = NULL;
@@ -713,5 +790,6 @@ int cmd_replay(int argc, char** argv) {
 
   free(frames);
   fflush(stdout);
+  flash_index_free(&idx);
   return 0;
 }

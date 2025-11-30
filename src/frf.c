@@ -335,13 +335,23 @@ int frf_next_record(
     unsigned char chain_raw[FRF_CHAIN_BYTES];
     if (read_exact(h->fp, chain_raw, sizeof(chain_raw))) return -4;
 
+    /* If we have never seen a previous hash yet... */
     if (!h->prev_hash_valid) {
-        if (!h->header_bytes_valid) return -7;
+        if (!h->header_bytes_valid) {
+            /* Mid-stream unverified mode (e.g. after frf_seek_bytes):
+               We do NOT know the earlier chain, so we explicitly
+               skip hash-chain verification. CRC is still enforced. */
+            if (out_len) *out_len = hdr->length;
+            return 0;
+        }
+
+        /* Normal verified path: seed chain from header hash. */
         memcpy(h->prev_hash, h->header_hash, 32);
         h->prev_hash_valid = true;
         h->next_seq_no = 0;
     }
 
+    /* Verified mode: enforce chain sequence + prev-hash continuity. */
     uint64_t seq = le_to_u64(chain_raw);
     const unsigned char* stored_prev = chain_raw + 8;
     if (seq != h->next_seq_no) return -7;
@@ -357,6 +367,32 @@ int frf_next_record(
     if (out_len) *out_len = hdr->length;
     return 0;
 }
+
+int frf_seek_bytes(frf_handle_t* h, uint64_t offset) {
+    if (!h || !h->fp) {
+        return -1;
+    }
+
+    /* Do not seek into the file header region. */
+    if (offset < FRF_FILE_HEADER_BYTES) {
+        return -1;
+    }
+
+    /* Reposition the underlying file pointer. */
+    if (fseek(h->fp, (long)offset, SEEK_SET) != 0) {
+        return -1;
+    }
+
+    /* Switching into "mid-stream, unverified" mode.
+       Disable header/chain context so frf_next_record will
+       skip hash-chain verification and only enforce CRC. */
+    h->prev_hash_valid = false;
+    h->header_bytes_valid = false;
+    h->next_seq_no = 0;
+
+    return 0;
+}
+
 
 void frf_get_chain_tip(const frf_handle_t* h, unsigned char out32[32]) {
     if (!out32) return;
