@@ -78,7 +78,8 @@ add_executable(flash
         cli/verify.c
         cli/repair.c
         cli/replay.c
-        cli/index.c)
+        cli/index.c
+        cli/merge.c)
 target_link_libraries(flash PRIVATE frf)
 target_include_directories(flash PRIVATE include)
 

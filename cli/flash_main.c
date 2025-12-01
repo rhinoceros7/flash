@@ -19,6 +19,7 @@ int cmd_verify(int argc, char **argv); /* Implemented in verify.c */
 int cmd_repair(int argc, char **argv); /* Implemented in repair.c */
 int cmd_replay(int argc, char **argv); /* Implemented in replay.c */
 int cmd_index(int argc, char **argv); /* Implemented in index.c */
+int cmd_merge(int argc, char **argv); /* Implemented in merge.c */
 
 typedef struct {
   const char* name;
@@ -378,8 +379,8 @@ int main(int argc, char** argv) {
       {"ingest", cmd_ingest},
       {"replay", cmd_replay},
       {"index", cmd_index},
+      {"merge", cmd_merge},
       {"export", cmd_stub},
-      {"merge", cmd_stub},
   };
   const size_t command_count = sizeof(commands) / sizeof(commands[0]);
 
