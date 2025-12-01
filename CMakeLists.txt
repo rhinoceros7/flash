@@ -81,6 +81,7 @@ add_executable(flash
         cli/index.c
         cli/merge.c
         cli/export.c
+        cli/info.c
 )
 target_link_libraries(flash PRIVATE frf)
 target_include_directories(flash PRIVATE include)

@@ -6,8 +6,13 @@
 #include "ingest.h"
 #include "flash/reader.h"
 #include "frf.h"
-#include "ingest_source.h"
-#include "ingest_formats.h"
+#include <error.h>
+#include <stdint.h>
+
+// Define version
+#ifndef FLASH_VERSION
+#define FLASH_VERSION "1.0.0"
+#endif
 
 #ifndef EX_USAGE
 #define EX_USAGE 64
@@ -21,31 +26,22 @@ int cmd_replay(int argc, char **argv); /* Implemented in replay.c */
 int cmd_index(int argc, char **argv); /* Implemented in index.c */
 int cmd_merge(int argc, char **argv); /* Implemented in merge.c */
 int cmd_export(int argc, char **argv); /* Implemented in export.c */
+int cmd_info(int argc, char **argv); /* Implemented in info.c */
 
 typedef struct {
   const char* name;
   flash_cmd_fn fn;
 } flash_command;
 
+static void print_version_flag(void) {
+  printf("flash version %s (FRF magic %s)\n", FLASH_VERSION, FRF_MAGIC);
+}
+
 static void print_usage(void) {
   fprintf(stderr,
           "usage: flash <command> [args]\n"
-          "commands: info verify repair ingest index replay export merge\n");
-}
-
-static const char* status_name(int code) {
-  switch (code) {
-    case FLASH_OK: return "ok";
-    case FLASH_EOF: return "eof";
-    case FLASH_EIO: return "io_error";
-    case FLASH_EBADMAGIC: return "bad_magic";
-    case FLASH_ETRUNC_HDR: return "truncated_header";
-    case FLASH_ETRUNC_PAYLOAD: return "truncated_payload";
-    case FLASH_EBUFSIZE: return "buffer_too_small";
-    case FLASH_ECRC: return "crc_mismatch";
-    case FLASH_ECHAIN: return "chain_mismatch";
-    default: return "unknown";
-  }
+          "commands: info verify repair ingest index replay export merge\n"
+          "         flash --version  show version info\n");
 }
 
 static int strings_equal_ci(const char* a, const char* b) {
@@ -130,7 +126,7 @@ static int parse_record_value(const char* text, uint64_t* out) {
     }
   }
   if (multiplier != 0 && base > UINT64_MAX / multiplier) return -1;
-  *out = (uint64_t)base * multiplier;
+  *out = base * multiplier;
   return 0;
 }
 
@@ -225,87 +221,6 @@ static int parse_source_clause(int argc, char** argv, int* idx, ingest_config* c
   return -1;
 }
 
-static int cmd_info(int argc, char** argv) {
-  if (argc != 2) {
-    print_usage();
-    return EX_USAGE;
-  }
-  const char* path = argv[1];
-  flash_reader* reader = NULL;
-  int rc = flash_reader_open(path, &reader);
-  if (rc != FLASH_OK) {
-    fprintf(stderr, "flash info: failed to open '%s': %s\n", path, status_name(rc));
-    return 2;
-  }
-
-  uint64_t created_ns = 0;
-  rc = flash_reader_header_created_ns(reader, &created_ns);
-  if (rc != FLASH_OK) {
-    fprintf(stderr, "flash info: header read failed: %s\n", status_name(rc));
-    flash_reader_close(reader);
-    return 2;
-  }
-
-  uint64_t file_bytes = 0;
-  rc = flash_reader_filesize(reader, &file_bytes);
-  if (rc != FLASH_OK) {
-    fprintf(stderr, "flash info: filesize failed: %s\n", status_name(rc));
-    flash_reader_close(reader);
-    return 2;
-  }
-
-  uint64_t records = 0;
-  uint64_t total_frame_bytes = 0;
-  uint64_t first_ts = 0;
-  uint64_t last_ts = 0;
-  int have_ts = 0;
-
-  for (;;) {
-    flash_frame_meta meta;
-    uint32_t payload_len = 0;
-    int step = flash_reader_next(reader, &meta, NULL, 0, &payload_len);
-
-    if (step == FLASH_OK) {
-      if (!have_ts) { first_ts = meta.ts_unix_ns; have_ts = 1; }
-      last_ts = meta.ts_unix_ns;
-      records++;
-      total_frame_bytes += (uint64_t)FRF_FRAME_OVERHEAD + (uint64_t)payload_len;
-      continue;
-    }
-    if (step == FLASH_EOF) break;
-
-    fprintf(stderr,
-      "flash info: error while reading '%s' at offset %" PRIu64 ": %s\n",
-      path, meta.file_offset, status_name(step));
-    flash_reader_close(reader);
-    return 2;
-  }
-
-  flash_reader_close(reader);
-
-  char first_buf[32];
-  char last_buf[32];
-  char avg_buf[32];
-  if (have_ts) {
-    snprintf(first_buf, sizeof(first_buf), "%" PRIu64, first_ts);
-    snprintf(last_buf, sizeof(last_buf), "%" PRIu64, last_ts);
-  } else {
-    strcpy(first_buf, "n/a");
-    strcpy(last_buf, "n/a");
-  }
-  if (records > 0) {
-    uint64_t avg = total_frame_bytes / records;
-    snprintf(avg_buf, sizeof(avg_buf), "%" PRIu64, avg);
-  } else {
-    strcpy(avg_buf, "n/a");
-  }
-
-  printf("created_ns=%" PRIu64 " first_ts=%s last_ts=%s records=%" PRIu64
-         " file_bytes=%" PRIu64 " avg_frame_bytes=%s endianness=little\n",
-         created_ns, first_buf, last_buf, records, file_bytes, avg_buf);
-  return 0;
-}
-
 static int cmd_ingest(int argc, char** argv) {
   if (argc < 6) { print_usage(); return EX_USAGE; }
 
@@ -364,6 +279,13 @@ int main(int argc, char** argv) {
     print_usage();
     return EX_USAGE;
   }
+
+  if (strcmp(argv[1], "--version") == 0 ||
+    strcmp(argv[1], "-V") == 0 ||
+    strcmp(argv[1], "version") == 0) {
+    print_version_flag();
+    return 0;
+    }
 
   flash_command commands[] = {
       {"info", cmd_info},
