@@ -20,6 +20,7 @@ int cmd_repair(int argc, char **argv); /* Implemented in repair.c */
 int cmd_replay(int argc, char **argv); /* Implemented in replay.c */
 int cmd_index(int argc, char **argv); /* Implemented in index.c */
 int cmd_merge(int argc, char **argv); /* Implemented in merge.c */
+int cmd_export(int argc, char **argv); /* Implemented in export.c */
 
 typedef struct {
   const char* name;
@@ -358,14 +359,6 @@ static int cmd_ingest(int argc, char** argv) {
   return flash_ingest_run(&cfg);
 }
 
-
-
-static int cmd_stub(int argc, char** argv) {
-  (void)argc;
-  fprintf(stderr, "flash %s: not implemented yet\n", argv[0]);
-  return EX_USAGE;
-}
-
 int main(int argc, char** argv) {
   if (argc < 2) {
     print_usage();
@@ -380,7 +373,7 @@ int main(int argc, char** argv) {
       {"replay", cmd_replay},
       {"index", cmd_index},
       {"merge", cmd_merge},
-      {"export", cmd_stub},
+      {"export", cmd_export},
   };
   const size_t command_count = sizeof(commands) / sizeof(commands[0]);
 
