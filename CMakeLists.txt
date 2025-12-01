@@ -62,13 +62,6 @@ target_include_directories(frf PUBLIC include)
 target_link_libraries(frf PRIVATE blake3)
 target_include_directories(frf PRIVATE ${BLAKE3_DIR})
 
-# Tiny tools
-add_executable(flsh_write tools/flsh_write.c)
-target_link_libraries(flsh_write PRIVATE frf)
-
-add_executable(flsh_read tools/flsh_read.c)
-target_link_libraries(flsh_read PRIVATE frf)
-
 # Unified CLI
 add_executable(flash
         cli/flash_main.c
