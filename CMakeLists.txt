@@ -85,5 +85,5 @@ if (WIN32)
 endif()
 
 # Put all binaries in bin/
-set_target_properties(flsh_write flsh_read flash PROPERTIES
+set_target_properties(flash PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
