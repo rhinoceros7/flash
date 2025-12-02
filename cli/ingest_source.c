@@ -1,3 +1,7 @@
+// Copyright (c) 2025 Ryan King
+// Licensed under the PolyForm Noncommercial License 1.0.0.
+// See the LICENSE file for details.
+
 #include "ingest_source.h"
 #include <errno.h>
 #include <stdio.h>

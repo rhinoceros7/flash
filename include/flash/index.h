@@ -1,3 +1,7 @@
+// Copyright (c) 2025 Ryan King
+// Licensed under the PolyForm Noncommercial License 1.0.0.
+// See the LICENSE file for details.
+
 #ifndef FLASH_INDEX_H
 #define FLASH_INDEX_H
 

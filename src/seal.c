@@ -1,3 +1,7 @@
+// Copyright (c) 2025 Ryan King
+// Licensed under the PolyForm Noncommercial License 1.0.0.
+// See the LICENSE file for details.
+
 // Flash FSIG sealing core (Ed25519 + BLAKE2b-256, Monocypher)
 // This uses two external dependencies, Monocypher and libc.
 // Writes exactly one fixed-size trailer at EOF and fsyncs.

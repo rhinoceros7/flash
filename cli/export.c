@@ -1,3 +1,7 @@
+// Copyright (c) 2025 Ryan King
+// Licensed under the PolyForm Noncommercial License 1.0.0.
+// See the LICENSE file for details.
+
 #if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200112L
 #endif

@@ -1,3 +1,7 @@
+// Copyright (c) 2025 Ryan King
+// Licensed under the PolyForm Noncommercial License 1.0.0.
+// See the LICENSE file for details.
+
 #include <stdint.h>
 #include <stddef.h>
 
@@ -9,7 +13,7 @@ static void init_table(void) {
     for (uint32_t i = 0; i < 256; i++) {
         uint32_t c = i;
         for (int j = 0; j < 8; j++)
-            c = (c & 1) ? (poly ^ (c >> 1)) : (c >> 1);
+            c = c & 1 ? poly ^ c >> 1 : c >> 1;
         table[i] = c;
     }
     table_init = 1;

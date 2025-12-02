@@ -336,8 +336,19 @@ As the format settles, the FRF spec and sealing rules will be documented more fo
 
 ---
 
-## Contributing and License
+## Contributing
 
 Contributions via issues and pull requests are welcome.
 
-At the moment this repository does not include an explicit license file. If you plan to use Flash in production or in a closed-source setting, please contact the author/maintainers and clarify licensing before doing so.
+---
+
+## License
+
+Flash is made available under the PolyForm Noncommercial License 1.0.0.
+
+This means you may use, modify, and share the software for personal,
+academic, experimental, and other noncommercial purposes. Commercial use of
+any kind is strictly prohibited without a separate commercial license from
+the author.
+
+For full terms, see the LICENSE file.
