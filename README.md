@@ -1,10 +1,15 @@
-# Flash
+<h1 align="center">Flash</h1>
 
-Flash is a C library and unified CLI for working with append-only, verifiable event streams stored in `.flsh` files.
+<p align="center">
+  <i>Verifiable, append-only event streams for high-integrity data capture.</i>
+</p>
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm_Noncommercial_1.0.0-blue"></a>
+  <img src="https://img.shields.io/badge/C-17-blue">
+  <img src="https://img.shields.io/badge/Build-CMake-lightgrey">
+</p>
 
-It is designed for high-throughput capture of time-ordered records (market data, telemetry, logs, etc.) with built-in integrity checks, a cryptographic seal, and a practical command-line workflow.
-
----
+<hr>
 
 ## Overview
 
