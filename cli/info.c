@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include "ingest.h"
 #include "flash/reader.h"
 #include "frf.h"
