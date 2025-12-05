@@ -6,9 +6,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <io.h>
 #include <stdint.h>
 #include <stdbool.h>
+
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#endif
+
+#ifndef _WIN32
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#endif
 
 #include "frf.h"
 #include "flash/seal.h"
