@@ -585,7 +585,15 @@ int cmd_replay(int argc, char** argv) {
   if (!human) {
     flsh_off_t offset = start_offset;
     uint64_t emitted = 0;
-    unsigned char buf[64 * 1024];
+
+    uint32_t cap = 64 * 1024;
+    unsigned char* buf = (unsigned char*)malloc(cap);
+    if (!buf) {
+      fprintf(stderr, "flash replay: out of memory\n");
+      flash_index_free(&idx);
+      frf_close(&h);
+      return 2;
+    }
 
     for (;;) {
       // For sealed files, do not go past the FSIG trailer
@@ -596,7 +604,46 @@ int cmd_replay(int argc, char** argv) {
       frf_record_header_t hdr;
       uint32_t payload_len = 0;
 
-      rc = frf_next_record(&h, &hdr, buf, sizeof(buf), &payload_len);
+      rc = frf_next_record(&h, &hdr, buf, cap, &payload_len);
+
+      if (rc == -3) {
+        // Buffer too small for this payload. frf_next_record already consumed the header,
+        // so we must seek back to the start of this record (offset) before retrying.
+        uint32_t need = hdr.length;
+        uint32_t new_cap = cap;
+        while (new_cap < need) {
+          // Prevent runaway growth; FRF payload length is u32 anyway.
+          if (new_cap > (1u << 30)) {
+            fprintf(stderr, "flash replay: payload too large (%u bytes) in '%s'\n", need, path);
+            free(buf);
+            flash_index_free(&idx);
+            frf_close(&h);
+            return 2;
+          }
+          new_cap *= 2;
+        }
+
+        unsigned char* nb = realloc(buf, new_cap);
+        if (!nb) {
+          fprintf(stderr, "flash replay: out of memory (need %u bytes)\n", new_cap);
+          free(buf);
+          flash_index_free(&idx);
+          frf_close(&h);
+          return 2;
+        }
+        buf = nb;
+        cap = new_cap;
+
+        if (frf_seek_bytes(&h, offset) != 0) {
+          fprintf(stderr, "flash replay: failed to seek back to %" PRIu64 " in '%s'\n",
+                  (uint64_t)offset, path);
+          free(buf);
+          flash_index_free(&idx);
+          frf_close(&h);
+          return 2;
+        }
+        continue; // retry same record with larger buffer
+      }
 
       if (rc == 0) {
         uint64_t ts = hdr.ts_unix_ns;
@@ -610,7 +657,9 @@ int cmd_replay(int argc, char** argv) {
           fprintf(stderr,
                   "flash replay: offset overflow while reading '%s'\n",
                   path);
+          free(buf);
           frf_close(&h);
+          flash_index_free(&idx);
           return 2;
         }
         offset = next_offset;
@@ -637,7 +686,9 @@ int cmd_replay(int argc, char** argv) {
           if (fprintf(stdout, "%" PRIu64 " ", ts) < 0) {
             fprintf(stderr,
                     "flash replay: write to stdout failed (timestamp)\n");
+            free(buf);
             frf_close(&h);
+            flash_index_free(&idx);
             return 2;
           }
         }
@@ -646,7 +697,9 @@ int cmd_replay(int argc, char** argv) {
           if (fwrite(buf, 1, payload_len, stdout) != payload_len) {
             fprintf(stderr,
                     "flash replay: write to stdout failed (payload)\n");
+            free(buf);
             frf_close(&h);
+            flash_index_free(&idx);
             return 2;
           }
         }
@@ -654,7 +707,9 @@ int cmd_replay(int argc, char** argv) {
         if (fputc('\n', stdout) == EOF) {
           fprintf(stderr,
                   "flash replay: write to stdout failed (newline)\n");
+          free(buf);
           frf_close(&h);
+          flash_index_free(&idx);
           return 2;
         }
 
@@ -667,14 +722,17 @@ int cmd_replay(int argc, char** argv) {
         break;
       }
 
-      // Any negative rc is real FRF corruption in the data section
+      // Any negative rc othet than -3 is real FRF corruption in the data section
       fprintf(stderr,
               "flash replay: FRF error in '%s' (rc=%d). File may be corrupted.\n",
               path, rc);
+      free(buf);
       frf_close(&h);
+      flash_index_free(&idx);
       return 2;
     }
 
+    free(buf);
     frf_close(&h);
     fflush(stdout);
     flash_index_free(&idx);
@@ -683,7 +741,15 @@ int cmd_replay(int argc, char** argv) {
 
   // Human-readable mode: gather stats + summaries, then print
   flsh_off_t offset = start_offset;
-  unsigned char buf[64 * 1024];
+
+  uint32_t cap = 64 * 1024;
+  unsigned char* buf = malloc(cap);
+  if (!buf) {
+    fprintf(stderr, "flash replay: out of memory\n");
+    flash_index_free(&idx);
+    frf_close(&h);
+    return 2;
+  }
 
   frame_info* frames = NULL;
   size_t frames_cap = 0;
@@ -703,7 +769,43 @@ int cmd_replay(int argc, char** argv) {
 
     frf_record_header_t hdr;
     uint32_t payload_len = 0;
-    rc = frf_next_record(&h, &hdr, buf, sizeof(buf), &payload_len);
+    rc = frf_next_record(&h, &hdr, buf, cap, &payload_len);
+
+    if (rc == -3) {
+      uint32_t need = hdr.length;
+      uint32_t new_cap = cap;
+      while (new_cap < need) {
+        if (new_cap > 1u << 30) {
+          fprintf(stderr, "flash replay: payload too large (%u bytes) in '%s'\n", need, path);
+          free(buf);
+          flash_index_free(&idx);
+          frf_close(&h);
+          return 2;
+        }
+        new_cap *= 2;
+      }
+
+      unsigned char* nb = realloc(buf, new_cap);
+      if (!nb) {
+        fprintf(stderr, "flash replay: out of memory (need %u bytes)\n", new_cap);
+        free(buf);
+        flash_index_free(&idx);
+        frf_close(&h);
+        return 2;
+      }
+      buf = nb;
+      cap = new_cap;
+
+      if (frf_seek_bytes(&h, offset) != 0) {
+        fprintf(stderr, "flash replay: failed to seek back to %" PRIu64 " in '%s'\n",
+                (uint64_t)offset, path);
+        free(buf);
+        flash_index_free(&idx);
+        frf_close(&h);
+        return 2;
+      }
+      continue;
+    }
 
     if (rc == 0) {
       uint64_t ts = hdr.ts_unix_ns;
@@ -813,6 +915,7 @@ int cmd_replay(int argc, char** argv) {
            fi->snippet);
   }
 
+  free(buf);
   free(frames);
   fflush(stdout);
   flash_index_free(&idx);
