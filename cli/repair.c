@@ -55,7 +55,7 @@ typedef struct {
 } flash_repair_report;
 
 /* Cross-platform truncate helper */
-static int truncate_file(const char *path, uint64_t new_size,
+static int truncate_file(const char *path, flsh_off_t new_size,
                          char *err_msg, size_t err_cap) {
     if (!path) {
         snprintf(err_msg, err_cap, "no path provided");
@@ -361,7 +361,7 @@ int cmd_repair(int argc, char **argv) {
     /* Scan records and track last good frame offset. */
     unsigned char buf[1 << 16];
     uint64_t record_count = 0;
-    uint64_t last_good_offset = FRF_FILE_HEADER_BYTES;
+    flsh_off_t last_good_offset = FRF_FILE_HEADER_BYTES;
     int scan_rc = 0; /* 1 = clean EOF, <0 = corruption */
 
     for (;;) {
@@ -370,8 +370,12 @@ int cmd_repair(int argc, char **argv) {
         rc = frf_next_record(&h, &rh, buf, sizeof(buf), &out_len);
         if (rc == 0) {
             record_count++;
-            last_good_offset += (uint64_t)FRF_FRAME_OVERHEAD +
-                                (uint64_t)rh.length;
+            if (flsh_add_overflow(last_good_offset,
+                                  (flsh_off_t)FRF_FRAME_OVERHEAD + (flsh_off_t)rh.length,
+                                  &last_good_offset) != 0) {
+                scan_rc = -1;
+                break;
+            }
             continue;
         }
         if (rc == 1) {

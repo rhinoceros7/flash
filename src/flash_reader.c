@@ -17,7 +17,7 @@ struct flash_reader {
   frf_handle_t handle;
   uint64_t created_ns;
   bool header_cached;
-  uint64_t current_offset; // start of next record header
+  flsh_off_t current_offset; // start of next record header
   unsigned char* scratch;
   uint32_t scratch_cap;
 };
@@ -44,26 +44,12 @@ static int ensure_scratch(flash_reader* r, uint32_t need) {
   return FLASH_OK;
 }
 
-static int flash_seek(FILE* fp, uint64_t offset) {
-#if defined(_WIN32)
-  return _fseeki64(fp, (long long)offset, SEEK_SET);
-#else
-  return fseeko(fp, (off_t)offset, SEEK_SET);
-#endif
+static int flash_seek(FILE* fp, flsh_off_t offset) {
+  return flsh_seek(fp, offset, SEEK_SET);
 }
 
-static int flash_tell(FILE* fp, uint64_t* out) {
-#if defined(_WIN32)
-  long long pos = _ftelli64(fp);
-  if (pos < 0) return -1;
-  *out = (uint64_t)pos;
-  return 0;
-#else
-  off_t pos = ftello(fp);
-  if (pos < 0) return -1;
-  *out = (uint64_t)pos;
-  return 0;
-#endif
+static int flash_tell(FILE* fp, flsh_off_t* out) {
+  return flsh_tell(fp, out);
 }
 
 int flash_reader_open(const char* path, flash_reader** out) {
@@ -119,39 +105,15 @@ int flash_reader_header_created_ns(flash_reader* r, uint64_t* out_created_ns) {
   return FLASH_OK;
 }
 
-int flash_reader_filesize(flash_reader* r, uint64_t* out_bytes) {
+int flash_reader_filesize(flash_reader* r, flsh_off_t* out_bytes) {
   if (!r || !out_bytes || !r->handle.fp) {
     return FLASH_EIO;
   }
-  FILE* fp = r->handle.fp;
-  uint64_t cur;
-  if (flash_tell(fp, &cur) != 0) {
+  flsh_off_t end = 0;
+  if (flsh_file_size(r->handle.fp, &end) != 0) {
     return FLASH_EIO;
   }
-#if defined(_WIN32)
-  if (_fseeki64(fp, 0, SEEK_END) != 0) {
-    return FLASH_EIO;
-  }
-  long long end = _ftelli64(fp);
-  if (end < 0) {
-    return FLASH_EIO;
-  }
-  if (_fseeki64(fp, (long long)cur, SEEK_SET) != 0) {
-    return FLASH_EIO;
-  }
-#else
-  if (fseeko(fp, 0, SEEK_END) != 0) {
-    return FLASH_EIO;
-  }
-  off_t end = ftello(fp);
-  if (end < 0) {
-    return FLASH_EIO;
-  }
-  if (fseeko(fp, (off_t)cur, SEEK_SET) != 0) {
-    return FLASH_EIO;
-  }
-#endif
-  *out_bytes = (uint64_t)end;
+  *out_bytes = end;
   return FLASH_OK;
 }
 
@@ -168,7 +130,7 @@ int flash_reader_next(flash_reader* r,
     return FLASH_EIO;
   }
 
-  uint64_t offset = r->current_offset;
+  flsh_off_t offset = r->current_offset;
   frf_record_header_t hdr;
   uint32_t read_len = 0;
 
@@ -216,7 +178,11 @@ retry:
 
   if (payload_buf) {
     if (buf_cap < hdr.length) {
-      r->current_offset = offset + (uint64_t)FRF_FRAME_OVERHEAD + (uint64_t)hdr.length;
+      flsh_off_t advance = 0;
+      if (flsh_add_overflow(offset, (flsh_off_t)FRF_FRAME_OVERHEAD + (flsh_off_t)hdr.length, &advance) != 0) {
+        return FLASH_EIO;
+      }
+      r->current_offset = advance;
       return FLASH_EBUFSIZE;
     }
     if (hdr.length > 0) {
@@ -224,6 +190,12 @@ retry:
     }
   }
 
-  r->current_offset = offset + (uint64_t)FRF_FRAME_OVERHEAD + (uint64_t)hdr.length;
+  {
+    flsh_off_t advance = 0;
+    if (flsh_add_overflow(offset, (flsh_off_t)FRF_FRAME_OVERHEAD + (flsh_off_t)hdr.length, &advance) != 0) {
+      return FLASH_EIO;
+    }
+    r->current_offset = advance;
+  }
   return FLASH_OK;
 }

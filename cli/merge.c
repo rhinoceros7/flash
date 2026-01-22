@@ -67,7 +67,7 @@ typedef struct {
     uint64_t created_ns;
     uint64_t first_ts;
     int has_ts;
-    uint64_t filesize;
+    flsh_off_t filesize;
     int original_index; // for stable-ish sorting
 } merge_input;
 
@@ -78,26 +78,8 @@ typedef struct {
 } merge_opts;
 
 /* Get filesize via stdio, cross-platform-ish. */
-static int get_filesize(FILE* f, uint64_t* out_size) {
-#if defined(_WIN32)
-    __int64 cur = _ftelli64(f);
-    if (cur < 0) return -1;
-    if (_fseeki64(f, 0, SEEK_END) != 0) return -1;
-    __int64 end = _ftelli64(f);
-    if (end < 0) return -1;
-    if (_fseeki64(f, cur, SEEK_SET) != 0) return -1;
-    *out_size = (uint64_t)end;
-    return 0;
-#else
-    off_t cur = ftello(f);
-    if (cur < 0) return -1;
-    if (fseeko(f, 0, SEEK_END) != 0) return -1;
-    off_t end = ftello(f);
-    if (end < 0) return -1;
-    if (fseeko(f, cur, SEEK_SET) != 0) return -1;
-    *out_size = (uint64_t)end;
-    return 0;
-#endif
+static int get_filesize(FILE* f, flsh_off_t* out_size) {
+    return flsh_file_size(f, out_size);
 }
 
 /* Probe a single input:
@@ -127,7 +109,7 @@ static int probe_input(const char* path,
         return 2;
     }
 
-    uint64_t filesize = 0;
+    flsh_off_t filesize = 0;
     if (get_filesize(f, &filesize) != 0) {
         fprintf(stderr,
                 "flash merge: could not stat '%s'\n", path);
@@ -145,7 +127,7 @@ static int probe_input(const char* path,
 
     // Frames live in [0 .. frames_end). For sealed files, the last 200 bytes
     // are the FSIG trailer and must NOT be treated as FRF frames.
-    uint64_t frames_end = filesize;
+    flsh_off_t frames_end = filesize;
     if (filesize >= FSIG_TRAILER_SIZE) {
         frames_end = filesize - FSIG_TRAILER_SIZE;
     }
@@ -176,13 +158,15 @@ static int probe_input(const char* path,
     (void)flags;
     uint64_t created_ns = rd_u64le(header_raw + 4);
 
-    uint64_t pos = FRF_FILE_HEADER_BYTES;
+    flsh_off_t pos = FRF_FILE_HEADER_BYTES;
     uint64_t first_ts = 0;
     int have_ts = 0;
 
     for (;;) {
         // Use frames_end here instead of filesize
-        if (pos + FRF_RECORD_HEADER_BYTES > frames_end) {
+        flsh_off_t header_end = 0;
+        if (flsh_add_overflow(pos, (flsh_off_t)FRF_RECORD_HEADER_BYTES, &header_end) != 0 ||
+            header_end > frames_end) {
             break;
         }
 
@@ -206,11 +190,12 @@ static int probe_input(const char* path,
             return 2;
         }
 
-        uint64_t frame_bytes = (uint64_t)FRF_RECORD_HEADER_BYTES +
-                               (uint64_t)length +
-                               (uint64_t)FRF_CHAIN_BYTES;
-
-        if (pos + frame_bytes > frames_end) {
+        flsh_off_t frame_bytes = (flsh_off_t)FRF_RECORD_HEADER_BYTES +
+                                 (flsh_off_t)length +
+                                 (flsh_off_t)FRF_CHAIN_BYTES;
+        flsh_off_t next_pos = 0;
+        if (flsh_add_overflow(pos, frame_bytes, &next_pos) != 0 ||
+            next_pos > frames_end) {
             break;
         }
 
@@ -220,18 +205,11 @@ static int probe_input(const char* path,
         }
 
         // Skip payload + chain
-#if defined(_WIN32)
-        if (_fseeki64(f, (int64_t)length + (int64_t)FRF_CHAIN_BYTES, SEEK_CUR) != 0) {
+        if (flsh_seek(f, (flsh_off_t)length + (flsh_off_t)FRF_CHAIN_BYTES, SEEK_CUR) != 0) {
             fclose(f);
             return 2;
         }
-#else
-        if (fseeko(f, (off_t)length + (off_t)FRF_CHAIN_BYTES, SEEK_CUR) != 0) {
-            fclose(f);
-            return 2;
-        }
-#endif
-        pos += frame_bytes;
+        pos = next_pos;
     }
 
     fclose(f);
@@ -259,7 +237,7 @@ static int merge_copy_one_input(const merge_input* in,
         return 2;
     }
 
-    uint64_t filesize = in->filesize;
+    flsh_off_t filesize = in->filesize;
     if (filesize < FRF_FILE_HEADER_BYTES) {
         fprintf(stderr,
                 "flash merge: '%s' too small to be a valid .flsh file\n",
@@ -269,7 +247,7 @@ static int merge_copy_one_input(const merge_input* in,
     }
 
     // Same logic: frames live in [0 .. frames_end)
-    uint64_t frames_end = filesize;
+    flsh_off_t frames_end = filesize;
     if (filesize >= FSIG_TRAILER_SIZE) {
         frames_end = filesize - FSIG_TRAILER_SIZE;
     }
@@ -283,13 +261,15 @@ static int merge_copy_one_input(const merge_input* in,
         return 2;
     }
 
-    uint64_t pos = FRF_FILE_HEADER_BYTES;
+    flsh_off_t pos = FRF_FILE_HEADER_BYTES;
 
     unsigned char* payload = NULL;
     uint32_t payload_cap = 0;
 
     for (;;) {
-        if (pos + FRF_RECORD_HEADER_BYTES > frames_end) {
+        flsh_off_t header_end = 0;
+        if (flsh_add_overflow(pos, (flsh_off_t)FRF_RECORD_HEADER_BYTES, &header_end) != 0 ||
+            header_end > frames_end) {
             break;
         }
 
@@ -317,11 +297,12 @@ static int merge_copy_one_input(const merge_input* in,
             return 2;
         }
 
-        uint64_t frame_bytes = (uint64_t)FRF_RECORD_HEADER_BYTES +
-                               (uint64_t)length +
-                               (uint64_t)FRF_CHAIN_BYTES;
-
-        if (pos + frame_bytes > frames_end) {
+        flsh_off_t frame_bytes = (flsh_off_t)FRF_RECORD_HEADER_BYTES +
+                                 (flsh_off_t)length +
+                                 (flsh_off_t)FRF_CHAIN_BYTES;
+        flsh_off_t next_pos = 0;
+        if (flsh_add_overflow(pos, frame_bytes, &next_pos) != 0 ||
+            next_pos > frames_end) {
             break;
         }
 
@@ -370,7 +351,7 @@ static int merge_copy_one_input(const merge_input* in,
         }
 
         (*total_records)++;
-        pos += frame_bytes;
+        pos = next_pos;
     }
 
     free(payload);

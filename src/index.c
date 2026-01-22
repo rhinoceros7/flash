@@ -171,7 +171,7 @@ int flash_index_build(const char* flsh_path,
     flash_reader* r = NULL;
     flash_frame_meta meta;
     uint32_t payload_len = 0;
-    uint64_t flsh_size_bytes = 0;
+    flsh_off_t flsh_size_bytes = 0;
 
     flash_index_entry_v1* entries = NULL;
     size_t entry_count = 0;
@@ -441,7 +441,7 @@ int flash_index_load(const char* flsh_path,
     if (is_stale) {
         *is_stale = 0;
         flash_reader* r = NULL;
-        uint64_t size_now = 0;
+        flsh_off_t size_now = 0;
         int rc = flash_reader_open(flsh_path, &r);
         if (rc == FLASH_OK) {
             (void)flash_reader_filesize(r, &size_now);

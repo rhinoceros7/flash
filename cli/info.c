@@ -48,29 +48,29 @@ static int info_get_seal_status(const char* path, int* sealed_out, int* salvage_
         return -1;
     }
 
-    if (fseek(f, 0, SEEK_END) != 0) {
+    if (flsh_seek(f, 0, SEEK_END) != 0) {
         fprintf(stderr,
                 "flash info: fseek(SEEK_END) failed while reading FSIG\n");
         fclose(f);
         return -1;
     }
 
-    long end_pos = ftell(f);
-    if (end_pos < 0) {
+    flsh_off_t end_pos = 0;
+    if (flsh_tell(f, &end_pos) != 0) {
         fprintf(stderr,
                 "flash info: ftell() failed while reading FSIG\n");
         fclose(f);
         return -1;
     }
 
-    if ((long)FLASH_FSIG_TRAILER_SIZE > end_pos) {
+    if ((flsh_off_t)FLASH_FSIG_TRAILER_SIZE > end_pos) {
         fprintf(stderr,
                 "flash info: file shorter than FSIG trailer size\n");
         fclose(f);
         return -1;
     }
 
-    if (fseek(f, end_pos - (long)FLASH_FSIG_TRAILER_SIZE, SEEK_SET) != 0) {
+    if (flsh_seek(f, end_pos - (flsh_off_t)FLASH_FSIG_TRAILER_SIZE, SEEK_SET) != 0) {
         fprintf(stderr,
                 "flash info: fseek() to FSIG trailer failed\n");
         fclose(f);
@@ -120,8 +120,8 @@ static uint64_t info_le64(const unsigned char* p) {
    file_bytes is always filled with the total file size on success. */
 int info_detect_fsig(const char* path,
                             int* has_fsig,
-                            uint64_t* fsig_offset_out,
-                            uint64_t* file_bytes_out) {
+                            flsh_off_t* fsig_offset_out,
+                            flsh_off_t* file_bytes_out) {
     *has_fsig = 0;
     *fsig_offset_out = 0;
     *file_bytes_out = 0;
@@ -134,7 +134,7 @@ int info_detect_fsig(const char* path,
         return -1;
     }
 
-    if (fseek(f, 0, SEEK_END) != 0) {
+    if (flsh_seek(f, 0, SEEK_END) != 0) {
         fprintf(stderr,
                 "flash info: fseek(SEEK_END) failed for '%s': %s\n",
                 path, strerror(errno));
@@ -142,8 +142,8 @@ int info_detect_fsig(const char* path,
         return -1;
     }
 
-    long size = ftell(f);
-    if (size < 0) {
+    flsh_off_t size = 0;
+    if (flsh_tell(f, &size) != 0) {
         fprintf(stderr,
                 "flash info: ftell() failed for '%s': %s\n",
                 path, strerror(errno));
@@ -158,11 +158,11 @@ int info_detect_fsig(const char* path,
         return 0; /* too small for "FSIG" */
     }
 
-    long window = size < INFO_FSIG_SEARCH_WINDOW
+    flsh_off_t window = size < (flsh_off_t)INFO_FSIG_SEARCH_WINDOW
                 ? size
-                : INFO_FSIG_SEARCH_WINDOW;
+                : (flsh_off_t)INFO_FSIG_SEARCH_WINDOW;
 
-    if (fseek(f, size - window, SEEK_SET) != 0) {
+    if (flsh_seek(f, size - window, SEEK_SET) != 0) {
         fprintf(stderr,
                 "flash info: fseek() to tail failed for '%s': %s\n",
                 path, strerror(errno));
@@ -178,11 +178,11 @@ int info_detect_fsig(const char* path,
         return 0;
     }
 
-    for (long i = 0; i <= window - 4; ++i) {
+    for (flsh_off_t i = 0; i + 4 <= window; ++i) {
         if (buf[i] == 'F' && buf[i + 1] == 'S' &&
             buf[i + 2] == 'I' && buf[i + 3] == 'G') {
             *has_fsig = 1;
-            *fsig_offset_out = (uint64_t)(size - window + i);
+            *fsig_offset_out = size - window + i;
             return 0;
         }
     }
@@ -197,8 +197,8 @@ int cmd_info(int argc, char** argv) {
 
   /* Detect FSIG trailer (if any) and total file size */
   int has_fsig = 0;
-  uint64_t fsig_offset = 0;
-  uint64_t file_bytes = 0;
+  flsh_off_t fsig_offset = 0;
+  flsh_off_t file_bytes = 0;
   if (info_detect_fsig(path, &has_fsig, &fsig_offset, &file_bytes) != 0) {
     /* Error already printed */
     return 2;
@@ -239,7 +239,7 @@ int cmd_info(int argc, char** argv) {
   uint64_t last_ts = 0;
   int have_ts = 0;
 
-  uint64_t offset = FRF_FILE_HEADER_BYTES;
+  flsh_off_t offset = FRF_FILE_HEADER_BYTES;
   if (has_fsig && fsig_offset < offset) {
     fprintf(stderr,
             "flash info: FSIG offset is before FRF data region in '%s'\n",
@@ -248,7 +248,7 @@ int cmd_info(int argc, char** argv) {
     return 2;
   }
 
-  if (fseek(h.fp, FRF_FILE_HEADER_BYTES, SEEK_SET) != 0) {
+  if (flsh_seek(h.fp, FRF_FILE_HEADER_BYTES, SEEK_SET) != 0) {
     fprintf(stderr,
             "flash info: fseek() to first frame failed for '%s': %s\n",
             path, strerror(errno));
@@ -271,7 +271,7 @@ int cmd_info(int argc, char** argv) {
     if (n != sizeof(hdr_bytes)) {
       fprintf(stderr,
               "flash info: truncated record header in '%s' at offset %" PRIu64 "\n",
-              path, offset);
+              path, (uint64_t)offset);
       frf_close(&h);
       return 2;
     }
@@ -280,24 +280,26 @@ int cmd_info(int argc, char** argv) {
     /* uint32_t type = info_le32(hdr_bytes + 4); */ (void)0;
     uint64_t ts_unix_ns = info_le64(hdr_bytes + 8);
 
-    uint64_t frame_bytes =
-        (uint64_t)FRF_FRAME_OVERHEAD + (uint64_t)payload_len;
+    flsh_off_t frame_bytes =
+        (flsh_off_t)FRF_FRAME_OVERHEAD + (flsh_off_t)payload_len;
 
     /* Ensure we don't skip into FSIG */
-    if (has_fsig && offset + frame_bytes > fsig_offset) {
+    flsh_off_t next_offset = 0;
+    if (flsh_add_overflow(offset, frame_bytes, &next_offset) != 0 ||
+        (has_fsig && next_offset > fsig_offset)) {
       fprintf(stderr,
               "flash info: record at offset %" PRIu64
               " overlaps FSIG trailer in '%s'\n",
-              offset, path);
+              (uint64_t)offset, path);
       frf_close(&h);
       return 2;
     }
 
     /* Skip payload + hash chain */
-    if (fseek(h.fp, (long)(payload_len + FRF_CHAIN_BYTES), SEEK_CUR) != 0) {
+    if (flsh_seek(h.fp, (flsh_off_t)payload_len + (flsh_off_t)FRF_CHAIN_BYTES, SEEK_CUR) != 0) {
       fprintf(stderr,
               "flash info: truncated payload/chain in '%s' at offset %" PRIu64 "\n",
-              path, offset);
+              path, (uint64_t)offset);
       frf_close(&h);
       return 2;
     }
@@ -311,7 +313,7 @@ int cmd_info(int argc, char** argv) {
 
     records++;
     total_frame_bytes += frame_bytes;
-    offset += frame_bytes;
+    offset = next_offset;
   }
 
   frf_close(&h);
@@ -347,7 +349,7 @@ int cmd_info(int argc, char** argv) {
          " file_bytes=%" PRIu64 " avg_frame_bytes=%s"
          " sealed=%s salvage=%s endianness=little\n",
          created_ns, first_buf, last_buf,
-         records, file_bytes, avg_buf,
+         records, (uint64_t)file_bytes, avg_buf,
          sealed ? "yes" : "no",
          salvage ? "yes" : "no");
 

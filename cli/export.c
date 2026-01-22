@@ -34,7 +34,7 @@ static void export_usage(void) {
 
 static int detect_fsig_offset(const char* path,
                               int* has_fsig,
-                              uint64_t* fsig_offset_out) {
+                              flsh_off_t* fsig_offset_out) {
     *has_fsig = 0;
     *fsig_offset_out = 0;
 
@@ -46,7 +46,7 @@ static int detect_fsig_offset(const char* path,
         return -1;
     }
 
-    if (fseek(f, 0, SEEK_END) != 0) {
+    if (flsh_seek(f, 0, SEEK_END) != 0) {
         fprintf(stderr,
                 "flash export: fseek end failed on '%s': %s\n",
                 path, strerror(errno));
@@ -54,8 +54,8 @@ static int detect_fsig_offset(const char* path,
         return -1;
     }
 
-    long size = ftell(f);
-    if (size < 0) {
+    flsh_off_t size = 0;
+    if (flsh_tell(f, &size) != 0) {
         fprintf(stderr,
                 "flash export: ftell failed on '%s': %s\n",
                 path, strerror(errno));
@@ -68,8 +68,10 @@ static int detect_fsig_offset(const char* path,
         return 0; // too small to contain "FSIG"
     }
 
-    long window = size < FSIG_SEARCH_WINDOW ? size : FSIG_SEARCH_WINDOW;
-    if (fseek(f, size - window, SEEK_SET) != 0) {
+    flsh_off_t window = size < (flsh_off_t)FSIG_SEARCH_WINDOW
+                          ? size
+                          : (flsh_off_t)FSIG_SEARCH_WINDOW;
+    if (flsh_seek(f, size - window, SEEK_SET) != 0) {
         fprintf(stderr,
                 "flash export: fseek window failed on '%s': %s\n",
                 path, strerror(errno));
@@ -86,11 +88,11 @@ static int detect_fsig_offset(const char* path,
         return 0;
     }
 
-    for (long i = 0; i <= window - 4; ++i) {
+    for (flsh_off_t i = 0; i + 4 <= window; ++i) {
         if (buf[i] == 'F' && buf[i + 1] == 'S' &&
             buf[i + 2] == 'I' && buf[i + 3] == 'G') {
             *has_fsig = 1;
-            *fsig_offset_out = (uint64_t)(size - window + i);
+            *fsig_offset_out = size - window + i;
             return 0;
         }
     }
@@ -169,7 +171,7 @@ int cmd_export(int argc, char** argv) {
 
     /* Find FSIG trailer so we don't read into it */
     int has_fsig = 0;
-    uint64_t fsig_offset = 0;
+    flsh_off_t fsig_offset = 0;
     if (detect_fsig_offset(input_path, &has_fsig, &fsig_offset) != 0) {
         // Error already printed
         return 2;
@@ -219,7 +221,7 @@ int cmd_export(int argc, char** argv) {
     }
 
     /* Stream frames from just after the header up to FSIG offset */
-    uint64_t offset = FRF_FILE_HEADER_BYTES;
+    flsh_off_t offset = FRF_FILE_HEADER_BYTES;
     unsigned char buf[64 * 1024];
 
     for (;;) {
@@ -232,9 +234,19 @@ int cmd_export(int argc, char** argv) {
 
         rc = frf_next_record(&h, &hdr, buf, sizeof(buf), &payload_len);
         if (rc == 0) {
-            uint64_t frame_bytes =
-                (uint64_t)FRF_FRAME_OVERHEAD + (uint64_t)hdr.length;
-            offset += frame_bytes;
+            flsh_off_t frame_bytes =
+                (flsh_off_t)FRF_FRAME_OVERHEAD + (flsh_off_t)hdr.length;
+            flsh_off_t next_offset = 0;
+            if (flsh_add_overflow(offset, frame_bytes, &next_offset) != 0 ||
+                (has_fsig && next_offset > fsig_offset)) {
+                fprintf(stderr,
+                        "flash export: offset overflow while reading '%s'\n",
+                        input_path);
+                frf_close(&h);
+                if (out && out != stdout) fclose(out);
+                return 2;
+            }
+            offset = next_offset;
 
             if (payload_len > 0) {
                 size_t written = fwrite(buf, 1, payload_len, out);

@@ -12,6 +12,7 @@
 #include <errno.h>
 
 #include "flash/seal.h"
+#include "flash/offset.h"
 
 // Monocypher
 #include "third_party/monocypher/monocypher.h"
@@ -83,32 +84,14 @@ static uint32_t crc32(const uint8_t* data, size_t n){
 }
 
 // 64-bit tell helpers
-static int64_t file_size_bytes(FILE* f){
-#if defined(_WIN32)
-    int64_t cur = _ftelli64(f);
-    if (cur < 0) return -1;
-    if (_fseeki64(f, 0, SEEK_END) != 0) return -1;
-    int64_t end = _ftelli64(f);
-    if (_fseeki64(f, cur, SEEK_SET) != 0) return -1;
-    return end;
-#else
-    off_t cur = ftello(f);
-    if (cur < 0) return -1;
-    if (fseeko(f, 0, SEEK_END) != 0) return -1;
-    off_t end = ftello(f);
-    if (fseeko(f, cur, SEEK_SET) != 0) return -1;
-    return (int64_t)end;
-#endif
+static int file_size_bytes(FILE* f, flsh_off_t* out){
+    return flsh_file_size(f, out);
 }
 
 // Compute BLAKE2b-256 over [0..EOF) of current file handle.
 static int blake2b_file_digest(FILE* f, uint8_t out32[32], uint64_t* out_len){
     // Rewind
-#if defined(_WIN32)
-    if (_fseeki64(f, 0, SEEK_SET) != 0) return -1;
-#else
-    if (fseeko(f, 0, SEEK_SET) != 0) return -1;
-#endif
+    if (flsh_seek(f, 0, SEEK_SET) != 0) return -1;
     crypto_blake2b_ctx ctx;
     crypto_blake2b_init(&ctx, 32);
     uint8_t buf[1<<16];
@@ -253,15 +236,11 @@ int flash_seal_verify(const char* path)
     if (!f) return -2;
 
     // File must be at least trailer size
-    int64_t fsz = file_size_bytes(f);
-    if (fsz < 0 || (uint64_t)fsz < (uint64_t)FSIG_TRAILER_SIZE){ fclose(f); return -3; }
+    flsh_off_t fsz = 0;
+    if (file_size_bytes(f, &fsz) != 0 || fsz < (flsh_off_t)FSIG_TRAILER_SIZE){ fclose(f); return -3; }
 
     // Read trailer
-#if defined(_WIN32)
-    if (_fseeki64(f, (int64_t)fsz - FSIG_TRAILER_SIZE, SEEK_SET) != 0){ fclose(f); return -4; }
-#else
-    if (fseeko(f, (off_t)(fsz - FSIG_TRAILER_SIZE), SEEK_SET) != 0){ fclose(f); return -4; }
-#endif
+    if (flsh_seek(f, fsz - (flsh_off_t)FSIG_TRAILER_SIZE, SEEK_SET) != 0){ fclose(f); return -4; }
     uint8_t tr[FSIG_TRAILER_SIZE];
     if (fread(tr, 1, sizeof tr, f) != sizeof tr){ fclose(f); return -5; }
 
@@ -294,14 +273,17 @@ int flash_seal_verify(const char* path)
     const uint8_t* kid = tr + 188; // 8
 
     // Enforce strict EOF
-    if (signed_len + FSIG_TRAILER_SIZE != (uint64_t)fsz){ fclose(f); return -9; }
+    {
+        flsh_off_t expected = 0;
+        if (flsh_add_overflow((flsh_off_t)signed_len, (flsh_off_t)FSIG_TRAILER_SIZE, &expected) != 0 ||
+            expected != fsz) {
+            fclose(f);
+            return -9;
+        }
+    }
 
     // Recompute digest over [0..signed_len)
-#if defined(_WIN32)
-    if (_fseeki64(f, 0, SEEK_SET) != 0){ fclose(f); return -10; }
-#else
-    if (fseeko(f, 0, SEEK_SET) != 0){ fclose(f); return -10; }
-#endif
+    if (flsh_seek(f, 0, SEEK_SET) != 0){ fclose(f); return -10; }
     crypto_blake2b_ctx ctx;
     crypto_blake2b_init(&ctx, 32);
     {

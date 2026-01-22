@@ -7,12 +7,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include "flash/offset.h"
 #include "flash/errors.h"
 
 typedef struct flash_reader flash_reader;
 
 typedef struct {
-    uint64_t file_offset;
+    flsh_off_t file_offset;
     uint64_t ts_unix_ns;
     uint32_t type;
     uint32_t length;
@@ -29,6 +30,6 @@ int  flash_reader_next(
     );
 
 int  flash_reader_header_created_ns(flash_reader* r, uint64_t* out_created_ns);
-int  flash_reader_filesize(flash_reader* r, uint64_t* out_bytes);
+int  flash_reader_filesize(flash_reader* r, flsh_off_t* out_bytes);
 
 #endif // FLASH_READER_H

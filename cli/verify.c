@@ -59,27 +59,27 @@ static int flash_verify_read_fsig_meta(flash_verify_report *rep) {
     }
 
     /* Seek to trailer start */
-    if (fseek(f, 0, SEEK_END) != 0) {
+    if (flsh_seek(f, 0, SEEK_END) != 0) {
         snprintf(rep->err_msg, sizeof(rep->err_msg),
                  "fseek(SEEK_END) failed while reading FSIG");
         fclose(f);
         return FLASH_VERIFY_IO_ERROR;
     }
-    long end_pos = ftell(f);
-    if (end_pos < 0) {
+    flsh_off_t end_pos = 0;
+    if (flsh_tell(f, &end_pos) != 0) {
         snprintf(rep->err_msg, sizeof(rep->err_msg),
                  "ftell() failed while reading FSIG");
         fclose(f);
         return FLASH_VERIFY_IO_ERROR;
     }
-    if ((long)FLASH_FSIG_TRAILER_SIZE > end_pos) {
+    if ((flsh_off_t)FLASH_FSIG_TRAILER_SIZE > end_pos) {
         snprintf(rep->err_msg, sizeof(rep->err_msg),
                  "file shorter than FSIG trailer size");
         fclose(f);
         return FLASH_VERIFY_IO_ERROR;
     }
 
-    if (fseek(f, end_pos - (long)FLASH_FSIG_TRAILER_SIZE, SEEK_SET) != 0) {
+    if (flsh_seek(f, end_pos - (flsh_off_t)FLASH_FSIG_TRAILER_SIZE, SEEK_SET) != 0) {
         snprintf(rep->err_msg, sizeof(rep->err_msg),
                  "fseek() to FSIG trailer failed");
         fclose(f);

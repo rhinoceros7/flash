@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "flash/offset.h"
 
 #define FRF_MAGIC "FLSHv001"
 #define FRF_MAGIC_LEN  8
@@ -77,7 +78,7 @@ int  frf_next_record(
    Assumes offset points to the start of a valid frame header.
    This is intended for readers (mode "rb") like `flash replay`.
    Returns 0 on success, non-zero on error. */
-int frf_seek_bytes(frf_handle_t* h, uint64_t offset);
+int frf_seek_bytes(frf_handle_t* h, flsh_off_t offset);
 
 /* CRC32 utility (IEEE/poly 0xEDB88320). */
 uint32_t frf_crc32(const void* data, size_t n);

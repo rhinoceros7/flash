@@ -161,7 +161,7 @@ static void replay_usage(void) {
 
 static int detect_fsig_offset(const char* path,
                               int* has_fsig,
-                              uint64_t* fsig_offset_out) {
+                              flsh_off_t* fsig_offset_out) {
   *has_fsig = 0;
   *fsig_offset_out = 0;
 
@@ -173,7 +173,7 @@ static int detect_fsig_offset(const char* path,
     return -1;
   }
 
-  if (fseek(f, 0, SEEK_END) != 0) {
+  if (flsh_seek(f, 0, SEEK_END) != 0) {
     fprintf(stderr,
             "flash replay: fseek end failed on '%s': %s\n",
             path, strerror(errno));
@@ -181,8 +181,8 @@ static int detect_fsig_offset(const char* path,
     return -1;
   }
 
-  long size = ftell(f);
-  if (size < 0) {
+  flsh_off_t size = 0;
+  if (flsh_tell(f, &size) != 0) {
     fprintf(stderr,
             "flash replay: ftell failed on '%s': %s\n",
             path, strerror(errno));
@@ -195,8 +195,10 @@ static int detect_fsig_offset(const char* path,
     return 0; // too small to contain "FSIG"
   }
 
-  long window = size < FSIG_SEARCH_WINDOW ? size : FSIG_SEARCH_WINDOW;
-  if (fseek(f, size - window, SEEK_SET) != 0) {
+  flsh_off_t window = size < (flsh_off_t)FSIG_SEARCH_WINDOW
+                        ? size
+                        : (flsh_off_t)FSIG_SEARCH_WINDOW;
+  if (flsh_seek(f, size - window, SEEK_SET) != 0) {
     fprintf(stderr,
             "flash replay: fseek window failed on '%s': %s\n",
             path, strerror(errno));
@@ -213,11 +215,11 @@ static int detect_fsig_offset(const char* path,
     return 0;
   }
 
-  for (long i = 0; i <= window - 4; ++i) {
+  for (flsh_off_t i = 0; i + 4 <= window; ++i) {
     if (buf[i] == 'F' && buf[i + 1] == 'S' &&
         buf[i + 2] == 'I' && buf[i + 3] == 'G') {
       *has_fsig = 1;
-      *fsig_offset_out = (uint64_t)(size - window + i);
+      *fsig_offset_out = size - window + i;
       return 0;
     }
   }
@@ -530,7 +532,7 @@ int cmd_replay(int argc, char** argv) {
 
   // Detect FSIG trailer (if present) so we don't go into it as FRF
   int has_fsig = 0;
-  uint64_t fsig_offset = 0;
+  flsh_off_t fsig_offset = 0;
   if (detect_fsig_offset(path, &has_fsig, &fsig_offset) != 0) {
     // I/O or other fatal error already printed
     return 2;
@@ -557,7 +559,7 @@ int cmd_replay(int argc, char** argv) {
 
   /* Decide where to start reading frames.
    Default: just after the FRF file header. */
-  uint64_t start_offset = FRF_FILE_HEADER_BYTES;
+  flsh_off_t start_offset = FRF_FILE_HEADER_BYTES;
 
   if (have_index && have_from) {
     const flash_index_entry_v1* e =
@@ -572,7 +574,7 @@ int cmd_replay(int argc, char** argv) {
     if (seek_rc != 0) {
       fprintf(stderr,
               "flash replay: failed to seek to %" PRIu64 " in '%s'\n",
-              start_offset, path);
+              (uint64_t)start_offset, path);
       flash_index_free(&idx);
       frf_close(&h);
       return 2;
@@ -581,7 +583,7 @@ int cmd_replay(int argc, char** argv) {
 
   // Non-human mode: stream payloads directly
   if (!human) {
-    uint64_t offset = start_offset;
+    flsh_off_t offset = start_offset;
     uint64_t emitted = 0;
     unsigned char buf[64 * 1024];
 
@@ -600,9 +602,18 @@ int cmd_replay(int argc, char** argv) {
         uint64_t ts = hdr.ts_unix_ns;
 
         // Advance logical FRF offset (header + payload + chain)
-        uint64_t frame_bytes =
-            (uint64_t)FRF_FRAME_OVERHEAD + (uint64_t)hdr.length;
-        offset += frame_bytes;
+        flsh_off_t frame_bytes =
+            (flsh_off_t)FRF_FRAME_OVERHEAD + (flsh_off_t)hdr.length;
+        flsh_off_t next_offset = 0;
+        if (flsh_add_overflow(offset, frame_bytes, &next_offset) != 0 ||
+            (has_fsig && next_offset > fsig_offset)) {
+          fprintf(stderr,
+                  "flash replay: offset overflow while reading '%s'\n",
+                  path);
+          frf_close(&h);
+          return 2;
+        }
+        offset = next_offset;
 
         // Time filters
         if (have_from && ts < from_ts) {
@@ -671,7 +682,7 @@ int cmd_replay(int argc, char** argv) {
   }
 
   // Human-readable mode: gather stats + summaries, then print
-  uint64_t offset = start_offset;
+  flsh_off_t offset = start_offset;
   unsigned char buf[64 * 1024];
 
   frame_info* frames = NULL;
@@ -696,9 +707,19 @@ int cmd_replay(int argc, char** argv) {
 
     if (rc == 0) {
       uint64_t ts = hdr.ts_unix_ns;
-      uint64_t frame_bytes =
-          (uint64_t)FRF_FRAME_OVERHEAD + (uint64_t)hdr.length;
-      offset += frame_bytes;
+      flsh_off_t frame_bytes =
+          (flsh_off_t)FRF_FRAME_OVERHEAD + (flsh_off_t)hdr.length;
+      flsh_off_t next_offset = 0;
+      if (flsh_add_overflow(offset, frame_bytes, &next_offset) != 0 ||
+          (has_fsig && next_offset > fsig_offset)) {
+        fprintf(stderr,
+                "flash replay: offset overflow while reading '%s'\n",
+                path);
+        free(frames);
+        frf_close(&h);
+        return 2;
+      }
+      offset = next_offset;
       total_frames++;
 
       if (ts > 0) {

@@ -82,6 +82,9 @@ target_include_directories(flash PRIVATE include)
 if (WIN32)
     target_link_libraries(flash PRIVATE ws2_32)
     target_link_libraries(frf PRIVATE bcrypt)
+else()
+    target_compile_definitions(frf PUBLIC _FILE_OFFSET_BITS=64)
+    target_compile_definitions(flash PRIVATE _FILE_OFFSET_BITS=64)
 endif()
 
 # Put all binaries in bin/

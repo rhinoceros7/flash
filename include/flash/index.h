@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "flash/offset.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,7 +19,7 @@ extern "C" {
 
 typedef struct {
     uint64_t frame_index; /* 0-based frame number */
-    uint64_t offset; /* byte offset of frame start in .flsh */
+    flsh_off_t offset; /* byte offset of frame start in .flsh */
     int64_t first_ts; /* first record timestamp in this frame (ns) or 0 */
     uint32_t flags; /* frame type / flags */
     uint32_t reserved; /* reserved for future use */
@@ -39,7 +40,7 @@ typedef struct {
     int64_t first_ts; /* earliest timestamp in file (ns), or 0 if unknown */
     int64_t last_ts; /* latest timestamp in file (ns), or 0 if unknown */
 
-    uint64_t flsh_size_bytes; /* size of .flsh when index was built */
+    flsh_off_t flsh_size_bytes; /* size of .flsh when index was built */
 
     uint8_t flsh_digest[32]; /* reserved for future FSIG integration, zero for now */
     uint8_t chain_tip[32]; /* reserved for future FSIG integration, zero for now */

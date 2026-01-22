@@ -104,20 +104,20 @@ int frf_write_header_if_new(frf_handle_t* h, uint64_t created_unix_ns) {
     if (!h || !h->fp || !h->is_writer) return -1;
 
     // Determine true file size
-    long save = ftell(h->fp);
-    if (save < 0) save = 0;
-    if (fseek(h->fp, 0, SEEK_END) != 0) return -1;
-    long endpos = ftell(h->fp);
-    if (endpos < 0) return -1;
+    flsh_off_t save = 0;
+    if (flsh_tell(h->fp, &save) != 0) save = 0;
+    if (flsh_seek(h->fp, 0, SEEK_END) != 0) return -1;
+    flsh_off_t endpos = 0;
+    if (flsh_tell(h->fp, &endpos) != 0) return -1;
 
     if (endpos > 0) {
         // File is not empty: ensure we are at end for appends and return
-        (void)fseek(h->fp, 0, SEEK_END);
+        (void)flsh_seek(h->fp, 0, SEEK_END);
         return 0;
     }
 
     // On a new/empty file: write magic + LE-packed 16-byte header
-    if (fseek(h->fp, 0, SEEK_SET) != 0) return -1;
+    if (flsh_seek(h->fp, 0, SEEK_SET) != 0) return -1;
 
     if (write_exact(h->fp, FRF_MAGIC, FRF_MAGIC_LEN)) return -1;
 
@@ -140,7 +140,7 @@ int frf_write_header_if_new(frf_handle_t* h, uint64_t created_unix_ns) {
     if (fd >= 0) fsync(fd);
 
     // Position at end for subsequent appends
-    (void)fseek(h->fp, 0, SEEK_END);
+    (void)flsh_seek(h->fp, 0, SEEK_END);
     return 0;
 }
 
@@ -148,23 +148,23 @@ static int prepare_writer_chain(frf_handle_t* h) {
     if (!h || !h->fp) return -1;
     if (h->prev_hash_valid && h->header_bytes_valid) return 0;
 
-    long cur = ftell(h->fp);
-    if (cur < 0) return -1;
-    if (fseek(h->fp, 0, SEEK_SET) != 0) return -1;
+    flsh_off_t cur = 0;
+    if (flsh_tell(h->fp, &cur) != 0) return -1;
+    if (flsh_seek(h->fp, 0, SEEK_SET) != 0) return -1;
 
     unsigned char magic[FRF_MAGIC_LEN];
     if (read_exact(h->fp, magic, FRF_MAGIC_LEN)) {
-        (void)fseek(h->fp, cur, SEEK_SET);
+        (void)flsh_seek(h->fp, cur, SEEK_SET);
         return -1;
     }
     if (memcmp(magic, FRF_MAGIC, FRF_MAGIC_LEN) != 0) {
-        (void)fseek(h->fp, cur, SEEK_SET);
+        (void)flsh_seek(h->fp, cur, SEEK_SET);
         return -1;
     }
 
     unsigned char header_raw[16];
     if (read_exact(h->fp, header_raw, sizeof(header_raw))) {
-        (void)fseek(h->fp, cur, SEEK_SET);
+        (void)flsh_seek(h->fp, cur, SEEK_SET);
         return -1;
     }
 
@@ -183,7 +183,7 @@ static int prepare_writer_chain(frf_handle_t* h) {
         if (n == 0) break;
         if (n != sizeof(hdr_bytes)) {
             free(payload);
-            (void)fseek(h->fp, cur, SEEK_SET);
+            (void)flsh_seek(h->fp, cur, SEEK_SET);
             return -1;
         }
 
@@ -191,19 +191,19 @@ static int prepare_writer_chain(frf_handle_t* h) {
         if (length > 0) {
             payload = (unsigned char*)realloc(payload, length);
             if (!payload) {
-                (void)fseek(h->fp, cur, SEEK_SET);
+                (void)flsh_seek(h->fp, cur, SEEK_SET);
                 return -1;
             }
             if (read_exact(h->fp, payload, length)) {
                 free(payload);
-                (void)fseek(h->fp, cur, SEEK_SET);
+                (void)flsh_seek(h->fp, cur, SEEK_SET);
                 return -1;
             }
         }
 
         if (read_exact(h->fp, chain_ext, sizeof(chain_ext))) {
             free(payload);
-            (void)fseek(h->fp, cur, SEEK_SET);
+            (void)flsh_seek(h->fp, cur, SEEK_SET);
             return -1;
         }
 
@@ -211,7 +211,7 @@ static int prepare_writer_chain(frf_handle_t* h) {
         unsigned char* stored_prev = chain_ext + 8;
         if (memcmp(stored_prev, h->prev_hash, 32) != 0) {
             free(payload);
-            (void)fseek(h->fp, cur, SEEK_SET);
+            (void)flsh_seek(h->fp, cur, SEEK_SET);
             return -1;
         }
 
@@ -221,7 +221,7 @@ static int prepare_writer_chain(frf_handle_t* h) {
     }
 
     free(payload);
-    if (fseek(h->fp, 0, SEEK_END) != 0) return -1;
+    if (flsh_seek(h->fp, 0, SEEK_END) != 0) return -1;
     return 0;
 }
 
@@ -372,7 +372,7 @@ int frf_next_record(
     return 0;
 }
 
-int frf_seek_bytes(frf_handle_t* h, uint64_t offset) {
+int frf_seek_bytes(frf_handle_t* h, flsh_off_t offset) {
     if (!h || !h->fp) {
         return -1;
     }
@@ -383,7 +383,7 @@ int frf_seek_bytes(frf_handle_t* h, uint64_t offset) {
     }
 
     /* Reposition the underlying file pointer. */
-    if (fseek(h->fp, (long)offset, SEEK_SET) != 0) {
+    if (flsh_seek(h->fp, offset, SEEK_SET) != 0) {
         return -1;
     }
 
