@@ -75,11 +75,100 @@ typedef struct {
     int verify_inputs;
     int concat_only;
     int build_index;
+    int interleave;
 } merge_opts;
+
+typedef struct {
+    const merge_input* meta;
+    FILE* f;
+    flsh_off_t frames_end;
+    flsh_off_t pos;
+
+    // current record
+    uint32_t length;
+    uint32_t type;
+    uint64_t ts;
+    unsigned char* payload;
+    uint32_t payload_cap;
+
+    int eof;
+} merge_cursor;
+
+typedef struct {
+    int* a;
+    int n;
+    int cap;
+} int_heap;
 
 /* Get filesize via stdio, cross-platform-ish. */
 static int get_filesize(FILE* f, flsh_off_t* out_size) {
     return flsh_file_size(f, out_size);
+}
+
+static int cursor_lt(const merge_cursor* cursors, int ia, int ib) {
+    const merge_cursor* a = &cursors[ia];
+    const merge_cursor* b = &cursors[ib];
+
+    if (a->ts < b->ts) return 1;
+    if (a->ts > b->ts) return 0;
+
+    // tie-breaker: input order (stable)
+    if (a->meta->original_index < b->meta->original_index) return 1;
+    if (a->meta->original_index > b->meta->original_index) return 0;
+
+    return 0;
+}
+
+static int heap_init(int_heap* h, int cap) {
+    h->a = (int*)malloc((size_t)cap * sizeof(int));
+    if (!h->a) return -1;
+    h->n = 0;
+    h->cap = cap;
+    return 0;
+}
+
+static void heap_free(int_heap* h) {
+    free(h->a);
+    h->a = NULL;
+    h->n = 0;
+    h->cap = 0;
+}
+
+static void heap_swap(int* x, int* y) {
+    int t = *x; *x = *y; *y = t;
+}
+
+static void heap_push(int_heap* h, const merge_cursor* cursors, int idx) {
+    int i = h->n++;
+    h->a[i] = idx;
+    while (i > 0) {
+        int p = (i - 1) / 2;
+        if (cursor_lt(cursors, h->a[i], h->a[p])) {
+            heap_swap(&h->a[i], &h->a[p]);
+            i = p;
+        } else break;
+    }
+}
+
+static int heap_pop(int_heap* h, const merge_cursor* cursors) {
+    int top = h->a[0];
+    h->n--;
+    if (h->n > 0) {
+        h->a[0] = h->a[h->n];
+        int i = 0;
+        for (;;) {
+            int l = 2*i + 1;
+            int r = 2*i + 2;
+            int m = i;
+            if (l < h->n && cursor_lt(cursors, h->a[l], h->a[m])) m = l;
+            if (r < h->n && cursor_lt(cursors, h->a[r], h->a[m])) m = r;
+            if (m != i) {
+                heap_swap(&h->a[i], &h->a[m]);
+                i = m;
+            } else break;
+        }
+    }
+    return top;
 }
 
 /* Probe a single input:
@@ -359,6 +448,176 @@ static int merge_copy_one_input(const merge_input* in,
     return 0;
 }
 
+static int cursor_open(merge_cursor* c, const merge_input* meta) {
+    memset(c, 0, sizeof(*c));
+    c->meta = meta;
+
+    c->f = fopen(meta->path, "rb");
+    if (!c->f) {
+        fprintf(stderr, "flash merge: failed to open '%s': %s\n", meta->path, strerror(errno));
+        return 2;
+    }
+
+    flsh_off_t filesize = meta->filesize;
+    c->frames_end = filesize;
+    if (filesize >= FSIG_TRAILER_SIZE) c->frames_end = filesize - FSIG_TRAILER_SIZE;
+
+    // Skip FRF file header
+    unsigned char skip[FRF_FILE_HEADER_BYTES];
+    if (fread(skip, 1, FRF_FILE_HEADER_BYTES, c->f) != FRF_FILE_HEADER_BYTES) {
+        fprintf(stderr, "flash merge: failed to read header '%s'\n", meta->path);
+        fclose(c->f);
+        c->f = NULL;
+        return 2;
+    }
+
+    c->pos = FRF_FILE_HEADER_BYTES;
+    c->payload = NULL;
+    c->payload_cap = 0;
+    c->eof = 0;
+    return 0;
+}
+
+static int cursor_next(merge_cursor* c) {
+    if (c->eof) return 0;
+
+    flsh_off_t header_end = 0;
+    if (flsh_add_overflow(c->pos, (flsh_off_t)FRF_RECORD_HEADER_BYTES, &header_end) != 0 ||
+        header_end > c->frames_end) {
+        c->eof = 1;
+        return 0;
+    }
+
+    unsigned char hdr_raw[FRF_RECORD_HEADER_BYTES];
+    size_t n = fread(hdr_raw, 1, sizeof(hdr_raw), c->f);
+    if (n == 0) { c->eof = 1; return 0; }
+    if (n != sizeof(hdr_raw)) { c->eof = 1; return 0; }
+
+    uint32_t length = rd_u32le(hdr_raw + 0);
+    uint32_t type   = rd_u32le(hdr_raw + 4);
+    uint64_t ts     = rd_u64le(hdr_raw + 8);
+
+    if (length > MERGE_MAX_PAYLOAD) {
+        fprintf(stderr, "flash merge: record length %" PRIu32 " in '%s' exceeds max (%u)\n",
+                length, c->meta->path, MERGE_MAX_PAYLOAD);
+        return 2;
+    }
+
+    flsh_off_t frame_bytes = (flsh_off_t)FRF_RECORD_HEADER_BYTES + (flsh_off_t)length + (flsh_off_t)FRF_CHAIN_BYTES;
+    flsh_off_t next_pos = 0;
+    if (flsh_add_overflow(c->pos, frame_bytes, &next_pos) != 0 || next_pos > c->frames_end) {
+        c->eof = 1;
+        return 0;
+    }
+
+    // Ensure payload buffer
+    if (length > 0) {
+        if (length > c->payload_cap) {
+            unsigned char* nb = (unsigned char*)realloc(c->payload, length);
+            if (!nb) {
+                fprintf(stderr, "flash merge: OOM reading '%s'\n", c->meta->path);
+                return 2;
+            }
+            c->payload = nb;
+            c->payload_cap = length;
+        }
+        if (fread(c->payload, 1, length, c->f) != length) {
+            fprintf(stderr, "flash merge: truncated payload in '%s'\n", c->meta->path);
+            return 2;
+        }
+    }
+
+    // Skip chain extension bytes
+    unsigned char chain_ext[FRF_CHAIN_BYTES];
+    if (fread(chain_ext, 1, sizeof(chain_ext), c->f) != sizeof(chain_ext)) {
+        fprintf(stderr, "flash merge: truncated chain extension in '%s'\n", c->meta->path);
+        return 2;
+    }
+
+    // Commit cursor record
+    c->length = length;
+    c->type = type;
+    c->ts = ts;
+    c->pos = next_pos;
+    return 0;
+}
+
+static void cursor_close(merge_cursor* c) {
+    if (c->f) fclose(c->f);
+    c->f = NULL;
+    free(c->payload);
+    c->payload = NULL;
+    c->payload_cap = 0;
+}
+
+static int merge_interleave_inputs(merge_input* inputs,
+                                  int input_count,
+                                  frf_handle_t* out,
+                                  uint64_t* total_records) {
+    merge_cursor* cursors = (merge_cursor*)calloc((size_t)input_count, sizeof(merge_cursor));
+    if (!cursors) {
+        fprintf(stderr, "flash merge: OOM allocating cursors\n");
+        return 2;
+    }
+
+    int_heap heap;
+    if (heap_init(&heap, input_count) != 0) {
+        fprintf(stderr, "flash merge: OOM allocating heap\n");
+        free(cursors);
+        return 2;
+    }
+
+    // Open cursors + prime first record
+    for (int i = 0; i < input_count; ++i) {
+        int rc = cursor_open(&cursors[i], &inputs[i]);
+        if (rc != 0) { heap_free(&heap); free(cursors); return rc; }
+
+        rc = cursor_next(&cursors[i]);
+        if (rc != 0) {
+            // close everything
+            for (int j = 0; j <= i; ++j) cursor_close(&cursors[j]);
+            heap_free(&heap);
+            free(cursors);
+            return rc;
+        }
+        if (!cursors[i].eof) heap_push(&heap, cursors, i);
+    }
+
+    // K-way merge
+    while (heap.n > 0) {
+        int i = heap_pop(&heap, cursors);
+        merge_cursor* c = &cursors[i];
+
+        int arc = frf_append_record(out,
+                                    c->type,
+                                    c->ts,
+                                    c->length ? c->payload : NULL,
+                                    c->length);
+        if (arc != 0) {
+            fprintf(stderr, "flash merge: failed to append record from '%s'\n", c->meta->path);
+            for (int j = 0; j < input_count; ++j) cursor_close(&cursors[j]);
+            heap_free(&heap);
+            free(cursors);
+            return 2;
+        }
+        (*total_records)++;
+
+        int rc = cursor_next(c);
+        if (rc != 0) {
+            for (int j = 0; j < input_count; ++j) cursor_close(&cursors[j]);
+            heap_free(&heap);
+            free(cursors);
+            return rc;
+        }
+        if (!c->eof) heap_push(&heap, cursors, i);
+    }
+
+    for (int j = 0; j < input_count; ++j) cursor_close(&cursors[j]);
+    heap_free(&heap);
+    free(cursors);
+    return 0;
+}
+
 /* Comparator for qsort when not using --concat-only.
  * Sort by first_ts (if present), then by created_ns, then original_index.
  */
@@ -388,7 +647,7 @@ static int merge_input_cmp(const void* a, const void* b) {
 
 static void print_merge_usage(void) {
     fprintf(stderr,
-            "usage: flash merge [--verify] [--concat-only] [--index] "
+            "usage: flash merge [--verify] [--concat-only] [--interleave] [--index] "
             "OUT.flsh IN1.flsh [IN2.flsh ...]\n");
 }
 
@@ -410,6 +669,8 @@ int cmd_merge(int argc, char** argv) {
             opts.concat_only = 1;
         } else if (strings_equal_ci(tok, "--index")) {
             opts.build_index = 1;
+        } else if (strings_equal_ci(tok, "--interleave")) {
+            opts.interleave = 1;
         } else {
             fprintf(stderr, "flash merge: unknown option '%s'\n", tok);
             print_merge_usage();
@@ -481,16 +742,21 @@ int cmd_merge(int argc, char** argv) {
 
     // Copy frames
     uint64_t total_records = 0;
-    for (int i = 0; i < input_count; ++i) {
-        int rc = merge_copy_one_input(&inputs[i], &out, &total_records);
-        if (rc != 0) {
-            fprintf(stderr,
-                    "flash merge: aborting due to error on '%s'\n",
-                    inputs[i].path);
-            frf_close(&out);
-            free(inputs);
-            return rc;
+    int mrc = 0;
+    if (opts.interleave) {
+        mrc = merge_interleave_inputs(inputs, input_count, &out, &total_records);
+    } else {
+        for (int i = 0; i < input_count; ++i) {
+            mrc = merge_copy_one_input(&inputs[i], &out, &total_records);
+            if (mrc != 0) break;
         }
+    }
+
+    if (mrc != 0) {
+        fprintf(stderr, "flash merge: aborting due to merge error\n");
+        frf_close(&out);
+        free(inputs);
+        return mrc;
     }
 
     // Capture chain tip and close FRF writer
